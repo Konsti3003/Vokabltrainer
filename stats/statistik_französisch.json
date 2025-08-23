@@ -1,0 +1,14 @@
+{
+    "hallo|salut": {
+        "richtig": 1,
+        "falsch": 1
+    },
+    "guten tag|bonjour": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "grün|vert": {
+        "richtig": 0,
+        "falsch": 0
+    }
+}

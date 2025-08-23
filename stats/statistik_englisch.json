@@ -1,0 +1,14 @@
+{
+    "vorteil|advantage": {
+        "richtig": 33,
+        "falsch": 8
+    },
+    "hallo|hello": {
+        "richtig": 32,
+        "falsch": 6
+    },
+    "grün|green": {
+        "richtig": 30,
+        "falsch": 7
+    }
+}
