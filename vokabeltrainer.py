@@ -13,8 +13,6 @@ from tkinter import filedialog, messagebox
 from PIL import Image
 
 
-
-
 # Tippfehler-Erkennung mit Tastatur-Layout
 def get_keyboard_distance(char1, char2):
     """Berechnet die Tastatur-Distanz zwischen zwei Buchstaben"""
@@ -26,8 +24,7 @@ def get_keyboard_distance(char1, char2):
         ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ö', 'ä', '#'],
         ['<', 'y', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-']
     ]
-    
-    
+
     # Finde Positionen der Buchstaben
     pos1 = None
     pos2 = None
