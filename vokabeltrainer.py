@@ -451,185 +451,66 @@ def upload_and_import():
 
     save_vokabeln_csv()
     show_editor()
-    editor_feedback.configure(text=f"{imported} neue Vokabeln importiert ✅")
-
-# =========================== UI Theme ========================================
-ctk.set_appearance_mode("System")
-ctk.set_default_color_theme("blue")
-
-# Moderne Farbpalette
-BTN_COLOR       = "#6366f1"  # Indigo
-BTN_HOVER_COLOR = "#4f46e5"  # Dunkleres Indigo
-SPRACH_COLOR    = "#10b981"  # Emerald (für Sprachanzeige)
-SUCCESS_COLOR   = "#059669"  # Dunkleres Emerald
-WARNING_COLOR   = "#f59e0b"  # Amber
-ERROR_COLOR     = "#dc2626"  # Rot
-TEXT_COLOR      = "#374151"  # Grau für Text
-LIGHT_TEXT      = "#6b7280"  # Helleres Grau
-
-BUTTON_FONT     = ("Segoe UI", 14)
-LABEL_COLOR     = "white"
-
-# ======================= Hauptfenster & Setup ================================
-app = ctk.CTk()
-app.title("Vokabeltrainer")
-try:
-    app.state('zoomed')
-except tk.TclError:
-    app.state('normal')
-app.protocol("WM_DELETE_WINDOW", lambda: (statistik_speichern(), app.quit()))
-
-frames = {}
-def zeige_frame(name):
-    for f in frames.values():
-        f.pack_forget()
-    frames[name].pack(fill='both', expand=True)
-    
-    # Sprachanzeige aktualisieren wenn zum Startbildschirm gewechselt wird
-    if name == 'start' and sprach_anzeige_label and aktuelle_sprache:
-        sprach_anzeige_label.configure(text=aktuelle_sprache.capitalize())
-
-def update_fenstertitel():
-    """Aktualisiert den Fenstertitel mit der aktuellen Sprache"""
-    if aktuelle_sprache:
-        app.title(f"Vokabeltrainer - {aktuelle_sprache.capitalize()}")
-    else:
-        app.title("Vokabeltrainer")
-
-def update_sprachanzeige():
-    """Aktualisiert die Sprachanzeige in allen Frames"""
-    if sprach_anzeige_label and aktuelle_sprache:
-        sprach_anzeige_label.configure(text=aktuelle_sprache.capitalize())
-
-app.geometry("1200x800")
-app.update()
-try:
-    app.state('zoomed')
-except tk.TclError:
-    app.state('normal')
-
-# ======================= Dynamische Schriftgrößen ============================
-base_font_size = 20
-def update_font_sizes(event=None):
-    if not app.winfo_exists():
-        return
-
-    w, h = app.winfo_width(), app.winfo_height()
-    if w < 300 or h < 300:
-        return
-
-    # Maßstab
-    scale    = min(w/1200, h/800)
-    sz_title = max(int(40 * scale), 18)
-    sz_btn   = max(int(16 * scale), 10)
-    sz_lbl   = max(int(20 * scale), 12)
-    btn_w    = int(200 * scale)
-    btn_h    = int(50 * scale)
-    icon_w   = icon_h = int(60 * scale)
-
-    def is_descendant(widget, ancestor):
-        parent = widget
-        while True:
-            if parent == ancestor:
-                return True
-            par_name = parent.winfo_parent()
-            if not par_name:
-                return False
-            parent = parent.nametowidget(par_name)
-
-    def resize_widget(widget):
-        # Statistik- und Editor-Frame überspringen
-        if (statistik_frame and is_descendant(widget, statistik_frame)) or \
-           (editor_frame    and is_descendant(widget, editor_frame)):
-            return
-
-        # Label anpassen
-        if isinstance(widget, ctk.CTkLabel):
-            text = widget.cget("text")
-            if text and len(text) > 10:
-                widget.configure(font=("Arial", sz_title))
-            else:
-                widget.configure(font=("Arial", sz_lbl))
-
-        # Button anpassen (Icons ignorieren)
-        elif isinstance(widget, ctk.CTkButton):
-            if widget._image:
-                # Icon-Button bleibt in der initialen Größe
-                pass
-            else:
-                widget.configure(width=btn_w, height=btn_h, font=("Arial", sz_btn))
-
-        # Entry anpassen
-        elif isinstance(widget, ctk.CTkEntry):
-            widget.configure(font=("Arial", sz_lbl))
-
-        # ProgressBar anpassen
-        elif isinstance(widget, ctk.CTkProgressBar):
-            widget.configure(width=int(400 * scale))
-
-        # Rekursion für alle Kinder
-        for child in widget.winfo_children():
-            resize_widget(child)
-
-    # Starte Rekursion am Wurzel-Widget
-    resize_widget(app)
-
-
-
-
-resize_job = None
-def debounced_update_font_sizes(event=None):
-    global resize_job
-    if resize_job:
-        app.after_cancel(resize_job)
-    resize_job = app.after(100, update_font_sizes)
-
-app.bind("<Configure>", debounced_update_font_sizes)
+    editor_feedback.configure(text=f"{imported} neue Vokabeln importiert {EMOJI_OK}")
 
 # ======================== Light/Dark Mode ====================================
 def wechsel_mode():
     ctk.set_appearance_mode("Light" if ctk.get_appearance_mode()=="Dark" else "Dark")
 
+# Neue Hilfsfunktion: erzeugt einen zentrierten Container mit Grid-Spacern
+def create_center_container(parent):
+    """Erzeugt einen Vollflächen-Container mit mittigem Unter-Frame.
+    Rückgabe: (outer_container, center_frame)
+    """
+    outer = ctk.CTkFrame(parent)
+    outer.pack(expand=True, fill='both')
+    outer.grid_rowconfigure(0, weight=1)
+    outer.grid_rowconfigure(1, weight=0)
+    outer.grid_rowconfigure(2, weight=1)
+    outer.grid_columnconfigure(0, weight=1)
+    center = ctk.CTkFrame(outer)
+    center.grid(row=1, column=0, sticky='n')
+    return outer, center
+
 # ========================== Startbildschirm ==================================
 def startbildschirm():
     frame = ctk.CTkFrame(app); frames['start'] = frame
 
-    container = ctk.CTkFrame(frame)
-    container.pack(expand=True, fill='both')
+    outer, center = create_center_container(frame)
 
-    ctk.CTkLabel(container, text="Vokabeltrainer", font=('Segoe UI', 48, 'bold')).pack(pady=40)
+    ctk.CTkLabel(center, text="Vokabeltrainer", font=('Segoe UI', 48, 'bold')).pack(pady=40)
 
     # Sprachanzeige hinzufügen
     global sprach_anzeige_label
     sprach_anzeige_label = ctk.CTkLabel(
-        container, 
+        center, 
         text=aktuelle_sprache.capitalize() if aktuelle_sprache else "Keine Sprache",
         font=('Segoe UI', 12),
         text_color=SPRACH_COLOR
     )
     sprach_anzeige_label.pack(pady=(0, 30))
 
-    ctk.CTkButton(container, text="Start", fg_color=BTN_COLOR,
+    ctk.CTkButton(center, text="Start", fg_color=BTN_COLOR,
                   command=starte_neu,
                   width=220, height=55, corner_radius=25,
                   font=('Segoe UI', 16, 'bold')).pack(pady=12)
 
-    ctk.CTkButton(container, text="Statistiken", fg_color=BTN_COLOR,
+    ctk.CTkButton(center, text="Statistiken", fg_color=BTN_COLOR,
                   command=lambda: [zeige_frame('statistik'), zeige_statistik()],
                   width=220, height=55, corner_radius=25,
                   font=('Segoe UI', 16, 'bold')).pack(pady=12)
 
-    ctk.CTkButton(container, text="Vokabeln bearbeiten", fg_color=BTN_COLOR,
+    ctk.CTkButton(center, text="Vokabeln bearbeiten", fg_color=BTN_COLOR,
                   command=lambda: [show_editor(), zeige_frame('editor')],
                   width=220, height=55, corner_radius=25,
                   font=('Segoe UI', 16, 'bold')).pack(pady=12)
 
-    ctk.CTkButton(container, text="Einstellungen", fg_color=BTN_COLOR,
+    ctk.CTkButton(center, text="Einstellungen", fg_color=BTN_COLOR,
                   command=lambda: zeige_frame('einstellungen'),
                   width=220, height=55, corner_radius=25,
                   font=('Segoe UI', 16, 'bold')).pack(pady=12)
 
-    btn_row = ctk.CTkFrame(container)
+    btn_row = ctk.CTkFrame(center)
     btn_row.pack(pady=20)
 
     ctk.CTkButton(btn_row, image=birne_icon, text="",
@@ -883,11 +764,19 @@ def neue_sprache_hinzufuegen(name):
 def trainer():
     frame = ctk.CTkFrame(app); frames['trainer'] = frame
 
-    container = ctk.CTkFrame(frame)
-    container.pack(expand=True, fill='both')
+    # Outer Container mit Grid, um Topbar oben zu fixieren und Inhalt zu zentrieren
+    outer = ctk.CTkFrame(frame)
+    outer.pack(expand=True, fill='both')
+    outer.grid_columnconfigure(0, weight=1)
+    # Reihen: 0=Topbar, 1=Spacer, 2=Content, 3=Spacer
+    outer.grid_rowconfigure(0, weight=0)
+    outer.grid_rowconfigure(1, weight=1)
+    outer.grid_rowconfigure(2, weight=0)
+    outer.grid_rowconfigure(3, weight=1)
 
-    top = ctk.CTkFrame(container)
-    top.pack(side='top', fill='x')
+    # Topbar
+    top = ctk.CTkFrame(outer)
+    top.grid(row=0, column=0, sticky='ew')
 
     ctk.CTkButton(top, image=haus_icon, text="", fg_color=BTN_COLOR,
                   width=40, height=40, corner_radius=20,
@@ -910,30 +799,43 @@ def trainer():
                   width=40, height=40, corner_radius=20,
                   command=wechsel_mode).pack(side='right', padx=10, pady=10)
 
+    # Content mittig
+    content = ctk.CTkFrame(outer)
+    content.grid(row=2, column=0)
+
     global frage_label, eingabe, feedback_label, punktzahl_label, fortschritt
-    frage_label = ctk.CTkLabel(container, text="", font=('Arial', 30))
+    frage_label = ctk.CTkLabel(content, text="", font=('Arial', 30))
     frage_label.pack(pady=30)
 
-    eingabe = ctk.CTkEntry(container, font=('Arial', 20), width=400)
+    eingabe = ctk.CTkEntry(content, font=('Arial', 20), width=600)
     eingabe.pack(pady=10)
-    eingabe.bind('<Return>', pruefe_antwort)
 
-    ctk.CTkButton(container, text="Antwort prüfen", fg_color=BTN_COLOR,
-                  command=pruefe_antwort, width=200, height=50, corner_radius=20).pack(pady=10)
+    # Enter im Eingabefeld: erst prüfen, dann beim nächsten Enter weiter
+    def on_entry_return(event):
+        if feedback_active:
+            naechste_vokabel()
+        else:
+            pruefe_antwort()
+        return "break"
+    eingabe.bind('<Return>', on_entry_return)
+    eingabe.bind('<KP_Enter>', on_entry_return)
 
-    feedback_label = ctk.CTkLabel(container, text="", font=('Arial', 20))
+    ctk.CTkButton(content, text="Antwort prüfen", fg_color=BTN_COLOR,
+                  command=pruefe_antwort, width=240, height=50, corner_radius=20).pack(pady=10)
+
+    feedback_label = ctk.CTkLabel(content, text="", font=('Arial', 20))
     feedback_label.pack(pady=10)
 
-    punktzahl_label = ctk.CTkLabel(container, text=f"Punktzahl: {punktzahl}", font=('Arial', 20))
+    punktzahl_label = ctk.CTkLabel(content, text=f"Punktzahl: {punktzahl}", font=('Arial', 20))
     punktzahl_label.pack(pady=10)
 
-    fortschritt = ctk.CTkProgressBar(container, width=400)
+    fortschritt = ctk.CTkProgressBar(content, width=600)
     fortschritt.set(0)
     fortschritt.pack(pady=10)
 
     # Vokabel Label für die Anzeige der nächsten Vokabel
     global vokabel_label
-    vokabel_label = ctk.CTkLabel(container, text="", font=('Arial', 24, 'bold'))
+    vokabel_label = ctk.CTkLabel(content, text="", font=('Arial', 24, 'bold'))
     vokabel_label.pack(pady=20)
 
     
@@ -942,35 +844,45 @@ def trainer():
 def statistik():
     frame = ctk.CTkFrame(app); frames['statistik'] = frame
 
-    container = ctk.CTkFrame(frame)
-    container.pack(expand=True, fill='both')
+    outer = ctk.CTkFrame(frame)
+    outer.pack(expand=True, fill='both')
+    outer.grid_rowconfigure(0, weight=0)  # Top
+    outer.grid_rowconfigure(1, weight=1)  # Scroll
+    outer.grid_rowconfigure(2, weight=0)  # Footer
+    outer.grid_columnconfigure(0, weight=1)
 
-    ctk.CTkButton(container, image=haus_icon, text="", fg_color=BTN_COLOR,
+    # Topbar/Head
+    top = ctk.CTkFrame(outer)
+    top.grid(row=0, column=0, sticky='ew')
+
+    ctk.CTkButton(top, image=haus_icon, text="", fg_color=BTN_COLOR,
                   width=40, height=40, corner_radius=20,
-                  command=lambda: zeige_frame('start')).pack(anchor='nw', padx=10, pady=10)
+                  command=lambda: zeige_frame('start')).pack(side='left', padx=10, pady=10)
 
-    # Sprachanzeige in der Statistik
+    # Sprachanzeige/Überschrift
     if aktuelle_sprache:
         ctk.CTkLabel(
-            container, 
-            text=f"Statistiken - {aktuelle_sprache.capitalize()}", 
+            top,
+            text=f"Statistiken - {aktuelle_sprache.capitalize()}",
             font=('Arial', 30)
-        ).pack(pady=(20, 10))
+        ).pack(side='left', padx=20, pady=10)
     else:
-        ctk.CTkLabel(container, text="Statistiken", font=('Arial', 30)).pack(pady=(20, 10))
+        ctk.CTkLabel(top, text="Statistiken", font=('Arial', 30)).pack(side='left', padx=20, pady=10)
 
     global stat_feedback_label, statistik_frame
-    stat_feedback_label = ctk.CTkLabel(container, text="", font=('Arial', 16), text_color="green")
-    stat_feedback_label.pack(pady=(0, 10))
+    stat_feedback_label = ctk.CTkLabel(top, text="", font=('Arial', 16), text_color="green")
+    stat_feedback_label.pack(side='right', padx=20, pady=10)
 
-    statistik_frame = ctk.CTkScrollableFrame(container, corner_radius=0)
-    statistik_frame.pack(fill='both', expand=True, padx=20, pady=10)
+    # Scrollbarer Mittelteil
+    statistik_frame = ctk.CTkScrollableFrame(outer, corner_radius=0)
+    statistik_frame.grid(row=1, column=0, sticky='nsew', padx=20, pady=10)
 
     for col in range(4):
         statistik_frame.grid_columnconfigure(col, weight=1, uniform="stat")
 
-    footer = ctk.CTkFrame(container)
-    footer.pack(fill='x', side='bottom', pady=10)
+    # Footer unten
+    footer = ctk.CTkFrame(outer)
+    footer.grid(row=2, column=0, sticky='ew', pady=10)
 
     ctk.CTkButton(footer, text="Zurück", command=lambda: zeige_frame('start'), fg_color=BTN_COLOR,
                   width=150, height=40, corner_radius=20).pack(side='left', padx=20)
@@ -1021,7 +933,7 @@ def statistik_zuruecksetzen():
         vokabel_statistik[k] = {'richtig': 0, 'falsch': 0}
     runde_status.clear()
     statistik_speichern()
-    stat_feedback_label.configure(text="Statistik zurückgesetzt ✅")
+    stat_feedback_label.configure(text=f"{EMOJI_OK}Statistik zurückgesetzt")
     zeige_statistik()
 
 # =========================== Vokabel-Editor ==================================
@@ -1082,12 +994,12 @@ def show_editor():
         en_e.insert(0, v['Englisch'])
         # Rot gefärbter Löschen-Button
         del_btn = ctk.CTkButton(
-            editor_frame, text="✖", width=30,
+            editor_frame, text="X", width=30,
             fg_color=ERROR_COLOR, hover_color="#b91c1c",
             font=('Segoe UI', 10),
             command=lambda idx=i: (
                 entferne_vokabel(idx),
-                editor_feedback.configure(text="Vokabel gelöscht ✅")
+                editor_feedback.configure(text=f"{EMOJI_OK}Vokabel gelöscht")
             )
         )
 
@@ -1105,7 +1017,7 @@ def show_editor():
             if de_widget.get().strip() and en_widget.get().strip():
                 # speichern und refresh
                 save_editor()
-                editor_feedback.configure(text="Änderung gespeichert ✅")
+                editor_feedback.configure(text=f"{EMOJI_OK}Änderung gespeichert")
                 # focus aufs nächste Deutsch-Feld (oder neu_de)
                 next_idx = idx + 1
                 if next_idx < len(editor_entries):
@@ -1131,7 +1043,7 @@ def show_editor():
         font=('Segoe UI', 12, 'bold'),
         command=lambda: (
             hinzufügen_vokabel(),
-            editor_feedback.configure(text="Vokabel hinzugefügt ✅"),
+            editor_feedback.configure(text=f"{EMOJI_OK}Vokabel hinzugefügt"),
             save_editor()
         )
     )
@@ -1147,7 +1059,7 @@ def show_editor():
         if neu_de.get().strip() and neu_en.get().strip():
             hinzufügen_vokabel()
             editor_feedback.configure(
-                text="Vokabel hinzugefügt ✅",
+                text=f"{EMOJI_OK}Vokabel hinzugefügt",
                 font=("Arial", 12),
                 text_color="green"
             )
@@ -1169,14 +1081,14 @@ def save_editor():
         if d and e:
             alle_vokabeln[idx] = {'Deutsch': d, 'Englisch': e}
     save_vokabeln_csv()
-    editor_feedback.configure(text="Änderungen gespeichert ✅")
+    editor_feedback.configure(text=f"{EMOJI_OK}Änderungen gespeichert")
     show_editor()
 
 def alle_vokabeln_loeschen():
     global alle_vokabeln
     alle_vokabeln = []
     save_vokabeln_csv()
-    editor_feedback.configure(text="Alle Vokabeln gelöscht ✅")
+    editor_feedback.configure(text=f"{EMOJI_OK}Alle Vokabeln gelöscht")
     show_editor()
 
 def entferne_vokabel(idx):
@@ -1198,7 +1110,7 @@ def hinzufügen_vokabel():
     else:
         alle_vokabeln.append({'Deutsch': d, 'Englisch': e})
         save_vokabeln_csv()
-        editor_feedback.configure(text="Vokabel hinzugefügt ✅")
+        editor_feedback.configure(text=f"{EMOJI_OK}Vokabel hinzugefügt")
 
     show_editor()
 
@@ -1244,20 +1156,25 @@ def handle_global_keys(event):
     """Globale Tastatur-Events für den Trainer-Modus"""
     if 'trainer' in frames and frames['trainer'].winfo_viewable():
 
-        # Enter oder Leertaste
-        if event.keysym in ['Return', 'space']:
-            # Phase 2: Feedbackmodus -> nächste Vokabel
+        # Enter: prüft Antwort bzw. geht weiter
+        if event.keysym == 'Return':
             if feedback_active:
                 naechste_vokabel()
                 return "break"
-
-            # Phase 1: Eingabemodus -> Antwort prüfen
-            elif eingabe and eingabe.focus_get() == eingabe:
+            else:
                 pruefe_antwort()
                 return "break"
 
+        # Leertaste: nur im Feedback-Modus weiterblättern, sonst normales Tippen erlauben
+        if event.keysym == 'space':
+            if feedback_active:
+                naechste_vokabel()
+                return "break"
+            else:
+                return None  # Space ins Eingabefeld durchlassen
+
         # F1 für Tipp
-        elif event.keysym == 'F1':
+        if event.keysym == 'F1':
             zeige_tipp()
             return "break"
 
@@ -1357,13 +1274,13 @@ def pruefe_antwort(event=None):
     eingabe.configure(state='disabled')
 
     if ant.lower() == kor.lower():
-        feedback_label.configure(text="✅ Richtig!", text_color=SUCCESS_COLOR)
+        feedback_label.configure(text=f"{EMOJI_OK}Richtig!", text_color=SUCCESS_COLOR)
         vokabel_statistik[key]['richtig'] += 1
         vokabel_repetitions[key] = vokabel_repetitions.get(key, 0) + 1
     else:
         if is_typo(ant, kor):
             feedback_label.configure(
-                text=f"✅ Fast richtig! \nRichtig: {aktuelle_vokabel['Englisch']}",
+                text=f"{EMOJI_PART}Fast richtig! \nRichtig: {aktuelle_vokabel['Englisch']}",
                 text_color=WARNING_COLOR
             )
             vokabel_statistik[key]['richtig'] += 1
@@ -1371,7 +1288,7 @@ def pruefe_antwort(event=None):
             punktzahl = max(0, punktzahl - 1)
         else:
             feedback_label.configure(
-                text=f"❌ Falsch! Richtig: {aktuelle_vokabel['Englisch']}",
+                text=f"{EMOJI_BAD}Falsch! Richtig: {aktuelle_vokabel['Englisch']}",
                 text_color=ERROR_COLOR
             )
             punktzahl = max(0, punktzahl - 5)
@@ -1405,29 +1322,30 @@ def show_weiter_button():
     app.focus_set()  # Fokus auf Button setzen
 
 # =========================== Endbildschirm ===================================
+# (bereits auf zentrierten Stil umgestellt, nur Container-Anordnung ändern)
+
 def endbildschirm():
     frame = ctk.CTkFrame(app); frames['ende'] = frame
 
-    container = ctk.CTkFrame(frame)
-    container.pack(expand=True, fill='both')
+    outer, center = create_center_container(frame)
 
-    ctk.CTkLabel(container, text="🎉 Fertig gelernt!", font=('Arial', 40)).pack(pady=40)
+    ctk.CTkLabel(center, text=f"{EMOJI_PARTY}Fertig gelernt!", font=('Arial', 40)).pack(pady=40)
 
     # Sprachanzeige im Endbildschirm
     if aktuelle_sprache:
         ctk.CTkLabel(
-            container, 
+            center, 
             text=aktuelle_sprache.capitalize(), 
             font=('Segoe UI', 12),
             text_color=SPRACH_COLOR
         ).pack(pady=(0, 20))
 
-    ctk.CTkLabel(container, text=f"Deine Punktzahl: {punktzahl}", font=('Arial', 20)).pack(pady=20)
+    ctk.CTkLabel(center, text=f"Deine Punktzahl: {punktzahl}", font=('Arial', 20)).pack(pady=20)
 
-    ctk.CTkButton(container, text="Wiederholen", command=starte_neu, fg_color=BTN_COLOR,
+    ctk.CTkButton(center, text="Wiederholen", command=starte_neu, fg_color=BTN_COLOR,
                   width=200, height=50, corner_radius=20).pack(pady=20)
 
-    ctk.CTkButton(container, text="Zum Startbildschirm", command=zurücksetzen, fg_color=BTN_COLOR,
+    ctk.CTkButton(center, text="Zum Startbildschirm", command=zurücksetzen, fg_color=BTN_COLOR,
                   width=200, height=50, corner_radius=20).pack(pady=20)
 
     zeige_frame('ende')
@@ -1453,15 +1371,155 @@ def starte_neu():
     if not alle_vokabeln:
         messagebox.showerror("Fehler", "Keine Vokabeln verfügbar. Bitte fügen Sie zuerst Vokabeln hinzu.")
         return
-        
-    # Trainer-Frame anzeigen und erste Vokabel laden
+    
+    # Runde vollständig zurücksetzen (Punktzahl, Wiederholungen, Reihenfolge)
+    reset_for_new_attempt()
+    
+    # Trainer-Frame anzeigen und Anzeige zurücksetzen
     zeige_frame('trainer')
+    if punktzahl_label:
+        punktzahl_label.configure(text=f"Punktzahl: {punktzahl}")
+    
+    # Erste Vokabel laden
     naechste_vokabel()
 
-# ============================= Main Guard ====================================
+# =========================== UI Theme & Emojis ===============================
+# Moderne Farbpalette
+BTN_COLOR       = "#6366f1"  # Indigo
+BTN_HOVER_COLOR = "#4f46e5"  # Dunkleres Indigo
+SPRACH_COLOR    = "#10b981"  # Emerald (für Sprachanzeige)
+SUCCESS_COLOR   = "#059669"  # Dunkleres Emerald
+WARNING_COLOR   = "#f59e0b"  # Amber
+ERROR_COLOR     = "#dc2626"  # Rot
+TEXT_COLOR      = "#374151"  # Grau für Text
+LIGHT_TEXT      = "#6b7280"  # Helleres Grau
+
+# Plattform-/Emoji-Einstellungen (unter Linux/Tk ggf. Problematisch)
+IS_LINUX = sys.platform.startswith('linux')
+USE_EMOJI = not IS_LINUX  # Standard: Emojis auf Linux aus, sonst an
+EMOJI_OK    = "✅ " if USE_EMOJI else ""
+EMOJI_BAD   = "❌ " if USE_EMOJI else ""
+EMOJI_PART  = "✅ " if USE_EMOJI else ""
+EMOJI_PARTY = "🎉 " if USE_EMOJI else ""
+
+# Frames-Registry und gemeinsame Helper
+frames = {}
+
+def zeige_frame(name: str):
+    """Blendet alle Frames aus und zeigt den gewählten an."""
+    for f in frames.values():
+        f.pack_forget()
+    if name in frames:
+        frames[name].pack(fill='both', expand=True)
+    # Sprachanzeige auf Start aktualisieren
+    if name == 'start':
+        update_sprachanzeige()
+
+
+def update_fenstertitel():
+    """Aktualisiert den Fenstertitel mit der aktuellen Sprache."""
+    try:
+        if aktuelle_sprache:
+            app.title(f"Vokabeltrainer - {aktuelle_sprache.capitalize()}")
+        else:
+            app.title("Vokabeltrainer")
+    except Exception:
+        # app evtl. noch nicht initialisiert
+        pass
+
+
+def update_sprachanzeige():
+    """Aktualisiert die Sprachanzeige in allen Frames (falls vorhanden)."""
+    try:
+        if sprach_anzeige_label and aktuelle_sprache:
+            sprach_anzeige_label.configure(text=aktuelle_sprache.capitalize())
+    except Exception:
+        pass
+
+# ======================= Dynamische Schriftgrößen ============================
+base_font_size = 20
+
+def update_font_sizes(event=None):
+    if 'app' not in globals() or not hasattr(app, 'winfo_exists'):
+        return
+    if not app.winfo_exists():
+        return
+
+    w, h = app.winfo_width(), app.winfo_height()
+    if w < 300 or h < 300:
+        return
+
+    # Maßstab
+    scale    = min(w/1200, h/800)
+    sz_title = max(int(40 * scale), 18)
+    sz_btn   = max(int(16 * scale), 10)
+    sz_lbl   = max(int(20 * scale), 12)
+    btn_w    = int(220 * scale)
+    btn_h    = int(50 * scale)
+
+    def resize_widget(widget):
+        # Labels
+        if isinstance(widget, ctk.CTkLabel):
+            text = widget.cget("text") or ""
+            # Größere Titel erkennen heuristisch
+            if len(text) > 10:
+                widget.configure(font=("Arial", sz_title))
+            else:
+                widget.configure(font=("Arial", sz_lbl))
+        # Buttons (ohne Icon-Bildbreite erzwingen)
+        elif isinstance(widget, ctk.CTkButton):
+            try:
+                has_image = bool(getattr(widget, "_image", None))
+            except Exception:
+                has_image = False
+            if not has_image:
+                widget.configure(width=btn_w, height=btn_h, font=("Arial", sz_btn))
+        # Entries skalieren (Breite relativ zum Fenster)
+        elif isinstance(widget, ctk.CTkEntry):
+            entry_w = max(int(w * 0.5), 300)
+            widget.configure(font=("Arial", sz_lbl), width=entry_w)
+        # ProgressBars skalieren
+        elif isinstance(widget, ctk.CTkProgressBar):
+            pb_w = max(int(w * 0.5), 300)
+            widget.configure(width=pb_w)
+        # Kinder rekursiv
+        for child in widget.winfo_children():
+            try:
+                resize_widget(child)
+            except Exception:
+                pass
+
+    resize_widget(app)
+
+# Debounce für Resize
+_resize_job = None
+
+def debounced_update_font_sizes(event=None):
+    global _resize_job
+    if _resize_job:
+        app.after_cancel(_resize_job)
+    _resize_job = app.after(80, update_font_sizes)
+
+# ============================ Hauptprogramm ==================================
+# ======================= Hauptfenster & Setup ================================
+app = ctk.CTk()
+app.title("Vokabeltrainer")
+try:
+    app.state('zoomed')
+except tk.TclError:
+    app.state('normal')
+app.geometry("1200x800")
+app.update()
+try:
+    app.state('zoomed')
+except tk.TclError:
+    app.state('normal')
+app.protocol("WM_DELETE_WINDOW", lambda: (statistik_speichern(), app.quit()))
+
+# Resize-Handling
+app.bind("<Configure>", debounced_update_font_sizes)
+
 if __name__ == "__main__":
-    
-    
     haus_icon  = lade_icon("haus.png")
     birne_icon = lade_icon("birne.png")
     tipp_icon  = lade_icon("tipp.png")
@@ -1488,6 +1546,7 @@ if __name__ == "__main__":
     update_font_sizes()
 
     app.bind_all('<KeyPress-Return>', handle_global_keys)
+    app.bind_all('<KeyPress-KP_Enter>', handle_global_keys)  # Numpad-Enter unterstützen
     app.bind_all('<KeyPress-space>', handle_global_keys) 
     app.bind_all('<KeyPress-F1>', handle_global_keys)
 
