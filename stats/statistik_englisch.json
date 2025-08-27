@@ -1,14 +1,22 @@
 {
     "vorteil|advantage": {
-        "richtig": 44,
-        "falsch": 9
+        "richtig": 82,
+        "falsch": 14
     },
     "hallo|hello": {
-        "richtig": 43,
-        "falsch": 9
+        "richtig": 78,
+        "falsch": 11
     },
     "grün|green": {
-        "richtig": 40,
-        "falsch": 7
+        "richtig": 75,
+        "falsch": 9
+    },
+    "gelb|yellow": {
+        "richtig": 2,
+        "falsch": 0
+    },
+    "auto|car": {
+        "richtig": 2,
+        "falsch": 0
     }
 }
