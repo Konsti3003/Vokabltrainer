@@ -291,7 +291,8 @@ training_settings = {
     'direction': 'de_to_foreign', # oder 'foreign_to_de'
     'session_goal': 10,
     'exam_mode': False,
-    'exam_time_limit': 30
+    # Standardmäßig 6 Sekunden pro Vokabel im Prüfungsmodus
+    'exam_time_limit': 6
 }
 
 # Vokabel-Wiederholungs-Tracking
@@ -311,6 +312,11 @@ timer_label = None
 session_learned = set()
 exam_timer_job = None
 exam_time_left = 0
+exam_total_time = 0
+exam_blink_job = None
+exam_blink_on = False
+exam_session_mode_active = False
+timer_bar = None
 current_question_direction = None
 
 # ======================= Hilfsfunktion: Alle Sprachen aus tessdata ============
@@ -641,6 +647,8 @@ def startbildschirm():
 
     def start_input_mode():
         training_settings['mode'] = 'input'
+        # Prüfungsmodus sicher deaktivieren
+        training_settings['exam_mode'] = False
         starte_neu()
 
     def start_choice_mode():
@@ -652,6 +660,15 @@ def startbildschirm():
         if count < 5:
             return  # still und leise nichts tun
         training_settings['mode'] = 'choice'
+        # Prüfungsmodus sicher deaktivieren
+        training_settings['exam_mode'] = False
+        starte_neu()
+
+    def start_exam_mode():
+        # Prüfungsmodus: fester Timer 6s pro Vokabel, Tipp ausgeschaltet
+        training_settings['mode'] = 'input'  # Prüfungsmodus immer als Eingabe
+        training_settings['exam_mode'] = True
+        training_settings['exam_time_limit'] = 8  # 6s + 2s Puffer pro Vokabel
         starte_neu()
 
     # Command global verfügbar machen, damit wir ihn bei gesperrtem Button entfernen können
@@ -735,6 +752,32 @@ def startbildschirm():
         font=('Segoe UI', 30, 'bold')
     )
     start_choice_button.pack(side='bottom')
+
+    # Rechter Container: Prüfungsmodus-Start
+    exam_container = ctk.CTkFrame(btn_row, fg_color="transparent")
+    exam_container.configure(width=START_CHOICE_CONTAINER_WIDTH)
+    try:
+        exam_container.pack_propagate(False)
+    except Exception:
+        pass
+    exam_container.pack(side='left', padx=12)
+    exam_inner = ctk.CTkFrame(exam_container, fg_color="transparent")
+    try:
+        exam_inner.place(relx=0.5, rely=1.0, relheight=1.0, anchor='s', x=0, y=0)
+    except Exception:
+        pass
+    btn_exam = ctk.CTkButton(
+        exam_inner,
+        text="Prüfungsmodus",
+        fg_color=ERROR_COLOR,
+        hover_color="#b91c1c",
+        command=start_exam_mode,
+        width=280,
+        height=100,
+        corner_radius=30,
+        font=('Segoe UI', 30, 'bold')
+    )
+    btn_exam.pack(side='bottom')
 
     # Nach Aufbau: Containerbreite dynamisch an inneren Inhalt + Shake-Puffer anpassen
     def _adjust_choice_width():
@@ -845,7 +888,8 @@ def einstellungen_screen():
     """Einstellungsseite mit Schiebereglern für Training-Parameter"""
     frame = ctk.CTkFrame(app); frames['einstellungen'] = frame
     
-    container = ctk.CTkFrame(frame)
+    # Scrollbarer Container statt fixer Frame
+    container = ctk.CTkScrollableFrame(frame, corner_radius=0)
     container.pack(expand=True, fill='both', padx=50, pady=50)
     
     # Header
@@ -957,19 +1001,7 @@ def einstellungen_screen():
             pass
     goal_slider.configure(command=lambda v: _on_goal_change(v))
 
-    # Prüfungsmodus
-    exam_frame = ctk.CTkFrame(container, fg_color="transparent")
-    exam_frame.pack(fill='x', pady=10)
-    ctk.CTkLabel(exam_frame, text="Prüfungsmodus", font=('Segoe UI', 18, 'bold')).pack(pady=(10,6))
-    exam_var = tk.BooleanVar(value=training_settings.get('exam_mode', False))
-    ctk.CTkSwitch(exam_frame, text="Aktiv (kein Tipp, Zeitlimit)", variable=exam_var).pack(anchor='w')
-    ctk.CTkLabel(exam_frame, text="Zeitlimit pro Frage (Sekunden)").pack(anchor='w', pady=(6,0))
-    exam_time_slider = ctk.CTkSlider(exam_frame, from_=5, to=120, number_of_steps=115)
-    exam_time_slider.set(training_settings.get('exam_time_limit',30))
-    exam_time_slider.pack(pady=6)
-    exam_time_lbl = ctk.CTkLabel(exam_frame, text=str(training_settings.get('exam_time_limit',30)))
-    exam_time_lbl.pack(pady=(6, 10))
-    exam_time_slider.configure(command=lambda v: exam_time_lbl.configure(text=str(int(v))))
+    # Prüfungsmodus wurde auf den Startbildschirm verlagert (feste 6s/Frage)
 
     # Buttons
     button_frame = ctk.CTkFrame(container, fg_color="transparent")
@@ -987,8 +1019,7 @@ def einstellungen_screen():
         dir_values = ['de_to_foreign', 'foreign_to_de', 'mixed']
         training_settings['direction'] = dir_values[dir_idx]
         training_settings['session_goal'] = int(goal_slider.get())
-        training_settings['exam_mode'] = bool(exam_var.get())
-        training_settings['exam_time_limit'] = int(exam_time_slider.get())
+        training_settings['exam_mode'] = False  # Prüfungsmodus wird nur vom Startbildschirm gestartet
         # Training starten
         reset_for_new_attempt()
         try:
@@ -1195,10 +1226,17 @@ def trainer():
     frage_label = ctk.CTkLabel(content, text="", font=('Arial', 36))
     frage_label.grid(row=1, column=0, pady=(40, 28), sticky='n')
 
-    # Timer + Zielanzeige unter der Frage
-    global timer_label, goal_label
-    timer_label = ctk.CTkLabel(content, text="", font=('Segoe UI', 18), text_color=ERROR_COLOR)
+    # Timer-Leiste + Zielanzeige unter der Frage
+    global timer_label, goal_label, timer_bar
+    # optional kleine Text-Zeile behalten (z.B. für Debug), aber primär Leiste nutzen
+    timer_label = ctk.CTkLabel(content, text="", font=('Segoe UI', 14), text_color=ERROR_COLOR)
     timer_label.grid(row=1, column=0, pady=(0,0), sticky='ne', padx=20)
+    timer_bar = ctk.CTkProgressBar(content, width=900)
+    try:
+        timer_bar.set(1.0)
+    except Exception:
+        pass
+    timer_bar.grid(row=1, column=0, pady=(26,0), sticky='s')
     goal_label = ctk.CTkLabel(content, text="", font=('Segoe UI', 16), text_color=SPRACH_COLOR)
     goal_label.grid(row=1, column=0, pady=(0,0), sticky='nw', padx=20)
 
@@ -1723,10 +1761,37 @@ def update_goal_and_timer_ui():
                     tipp_button.pack(side='right', padx=10, pady=10)
             except Exception:
                 pass
-        # Timer-Label: nur im Prüfungsmodus sichtbar
+        # Timer-Bar & Label: nur im Prüfungsmodus sichtbar
+        if timer_bar:
+            if training_settings.get('exam_mode', False):
+                # Fortschritt (0..1) setzen
+                frac = 1.0
+                if exam_total_time > 0:
+                    frac = max(0.0, min(1.0, exam_time_left / exam_total_time))
+                try:
+                    timer_bar.set(frac)
+                except Exception:
+                    pass
+                # Farbe je nach verbleibendem Anteil: >0.4 grün, >0.2 orange, >0 rot
+                try:
+                    if frac <= 0.2:
+                        timer_bar.configure(progress_color=ERROR_COLOR)
+                    elif frac <= 0.4:
+                        timer_bar.configure(progress_color=WARNING_COLOR)
+                    else:
+                        timer_bar.configure(progress_color=SUCCESS_COLOR)
+                except Exception:
+                    pass
+            else:
+                # Nicht im Prüfungsmodus: Leiste verbergen/leer lassen
+                try:
+                    timer_bar.set(0)
+                except Exception:
+                    pass
         if timer_label:
             if training_settings.get('exam_mode', False):
-                timer_label.configure(text=f"⏱ {exam_time_left}s")
+                # optional kurze Restzeit als Text
+                timer_label.configure(text=f"⏱ {max(exam_time_left,0)}s")
             else:
                 timer_label.configure(text="")
     except Exception:
@@ -1766,41 +1831,92 @@ def check_session_goal_reached():
         pass
 
 def exam_cancel_timer():
-    global exam_timer_job
+    global exam_timer_job, exam_blink_job, exam_blink_on, exam_session_mode_active
     try:
         if exam_timer_job and app:
             app.after_cancel(exam_timer_job)
     except Exception:
         pass
+    try:
+        if exam_blink_job and app:
+            app.after_cancel(exam_blink_job)
+    except Exception:
+        pass
     exam_timer_job = None
+    exam_blink_job = None
+    exam_blink_on = False
+    exam_session_mode_active = False
 
-def exam_start_timer():
-    """Startet/Reset den Timer pro Frage im Prüfungsmodus."""
-    global exam_time_left, exam_timer_job
+def _exam_blink_tick():
+    """Blink-Animation für die Timer-Leiste bei <=10% Restzeit."""
+    global exam_blink_job, exam_blink_on
+    try:
+        if not training_settings.get('exam_mode', False):
+            return
+        frac = (exam_time_left / exam_total_time) if exam_total_time > 0 else 0
+        if frac > 0.10:
+            # kein Blinken mehr nötig
+            return
+        # Toggle zwischen normaler Farbe und hellerem Rot
+        exam_blink_on = not exam_blink_on
+        if timer_bar:
+            if exam_blink_on:
+                timer_bar.configure(progress_color="#f87171")  # helleres Rot
+            else:
+                timer_bar.configure(progress_color=ERROR_COLOR)  # Standard Rot
+        exam_blink_job = app.after(400, _exam_blink_tick)
+    except Exception:
+        pass
+
+def exam_start_session_timer(total_seconds: int):
+    """Startet einen Sitzungs-Timer für den Prüfungsmodus (einmal pro Session)."""
+    global exam_time_left, exam_total_time, exam_timer_job, exam_session_mode_active
     exam_cancel_timer()
     if not training_settings.get('exam_mode', False):
         return
-    exam_time_left = int(training_settings.get('exam_time_limit', 30))
+    exam_total_time = max(1, int(total_seconds))
+    exam_time_left = exam_total_time
+    exam_session_mode_active = True
+
     def _tick():
         global exam_time_left, exam_timer_job
         exam_time_left -= 1
+        # Farb-/Fortschritt-Update
         try:
-            if timer_label:
-                timer_label.configure(text=f"⏱ {max(exam_time_left,0)}s")
+            update_goal_and_timer_ui()
+        except Exception:
+            pass
+        # Blinken starten/stoppen je nach Schwelle
+        try:
+            frac = (exam_time_left / exam_total_time) if exam_total_time > 0 else 0
+            if frac <= 0.10 and exam_blink_job is None:
+                # Blink starten
+                _exam_blink_tick()
         except Exception:
             pass
         if exam_time_left <= 0:
             exam_timer_job = None
-            if not feedback_active:
-                pruefe_antwort(user_answer="")  # Zeit abgelaufen -> falsch
+            # Zeit abgelaufen: Timer/Blinken stoppen, aktuelle Frage bewerten und Session beenden
+            try:
+                exam_cancel_timer()
+            except Exception:
+                pass
+            try:
+                if not feedback_active:
+                    pruefe_antwort(user_answer="")
+            except Exception:
+                pass
+            try:
+                endbildschirm()
+            except Exception:
+                pass
             return
         try:
             exam_timer_job = app.after(1000, _tick)
         except Exception:
             exam_timer_job = None
     try:
-        if timer_label:
-            timer_label.configure(text=f"⏱ {exam_time_left}s")
+        update_goal_and_timer_ui()
         exam_timer_job = app.after(1000, _tick)
     except Exception:
         pass
@@ -1898,9 +2014,12 @@ def naechste_vokabel():
                 app.after(50, lambda: choice_buttons[0].focus_set())
         except Exception:
             pass
-    # Prüfungsmodus: Timer neu starten
+    # Prüfungsmodus: Sitzungs-Timer nur einmal starten
     try:
-        exam_start_timer()
+        if training_settings.get('exam_mode', False) and not exam_session_mode_active:
+            per_vocab = int(training_settings.get('exam_time_limit', 8))  # 6 + 2
+            total = per_vocab * max(1, len(alle_vokabeln))
+            exam_start_session_timer(total)
     except Exception:
         pass
 
@@ -1935,11 +2054,7 @@ def pruefe_antwort(event=None, user_answer=None):
     if training_settings.get('mode', 'input') == 'choice':
         set_choice_buttons_state('disabled')
 
-    # Timer stoppen, sobald geantwortet wurde
-    try:
-        exam_cancel_timer()
-    except Exception:
-        pass
+    # Im Prüfungsmodus: Session-Timer NICHT stoppen – er läuft über die gesamte Sitzung
 
     if ant.lower() == kor.lower():
         feedback_label.configure(text=f"{EMOJI_OK}Richtig!", text_color=SUCCESS_COLOR)
@@ -2294,7 +2409,19 @@ def starte_neu():
         messagebox.showerror("Fehler", "Keine Vokabeln verfügbar. Bitte fügen Sie zuerst Vokabeln hinzu.")
         return
     reset_for_new_attempt()
+    # Timer-Status für neue Session zurücksetzen
+    try:
+        exam_cancel_timer()
+        if timer_bar:
+            timer_bar.set(1.0 if training_settings.get('exam_mode', False) else 0)
+    except Exception:
+        pass
     zeige_frame('trainer')
+    # UI an aktuellen Modus (inkl. Prüfungsmodus) anpassen
+    try:
+        update_goal_and_timer_ui()
+    except Exception:
+        pass
     try:
         if punktzahl_label:
             punktzahl_label.configure(text=f"Punktzahl: {punktzahl}")
