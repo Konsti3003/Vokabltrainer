@@ -1,18 +1,86 @@
 {
-    "vorteil|advantage": {
-        "richtig": 95,
-        "falsch": 15
+    "verärgert/irritiert|annoyed": {
+        "richtig": 10,
+        "falsch": 3
     },
-    "hallo|hello": {
-        "richtig": 93,
-        "falsch": 14
+    "verwirrt|confused": {
+        "richtig": 6,
+        "falsch": 0
     },
-    "grün|green": {
-        "richtig": 89,
-        "falsch": 9
+    "böse, sauer|cross": {
+        "richtig": 9,
+        "falsch": 7
     },
-    "gelb|yellow": {
-        "richtig": 16,
+    "verängstigt|frightened": {
+        "richtig": 8,
+        "falsch": 1
+    },
+    "optimistisch|optimistic": {
+        "richtig": 10,
+        "falsch": 1
+    },
+    "froh, erfreut, zufrieden|pleased": {
+        "richtig": 9,
+        "falsch": 1
+    },
+    "wütend, wutentbrannt|furious": {
+        "richtig": 8,
         "falsch": 2
+    },
+    "totunglücklich|heartbroken": {
+        "richtig": 8,
+        "falsch": 1
+    },
+    "entsetzt|terrified": {
+        "richtig": 9,
+        "falsch": 5
+    },
+    "begeistert|thrilled": {
+        "richtig": 14,
+        "falsch": 6
+    },
+    "ehemalig|ex-": {
+        "richtig": 5,
+        "falsch": 0
+    },
+    "Bekannter|acquaintance": {
+        "richtig": 6,
+        "falsch": 1
+    },
+    "beschreibung|characterization": {
+        "richtig": 10,
+        "falsch": 3
+    },
+    "gebärde|gesture": {
+        "richtig": 5,
+        "falsch": 0
+    },
+    "zuversichtlich|hopeful": {
+        "richtig": 3,
+        "falsch": 0
+    },
+    "hingezogen fühlen|to be attracted": {
+        "richtig": 4,
+        "falsch": 2
+    },
+    "zusammen sein|to be seeing": {
+        "richtig": 3,
+        "falsch": 1
+    },
+    "sich verlieben|to fall in love": {
+        "richtig": 3,
+        "falsch": 0
+    },
+    "mit jm. gehen|to date sb.": {
+        "richtig": 6,
+        "falsch": 1
+    },
+    "schluss machen|to break up": {
+        "richtig": 4,
+        "falsch": 1
+    },
+    "jm. kennenlernen|to get to know sb.": {
+        "richtig": 3,
+        "falsch": 0
     }
 }

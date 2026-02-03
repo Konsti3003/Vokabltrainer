@@ -6,12 +6,15 @@ import csv
 import random
 import re
 import openai
+from openai import OpenAI  # <-- Import für den modernen Client
 import pytesseract
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image
 from datetime import date
+import time
+from dotenv import load_dotenv
 
 # --- Vorab-Definitionen zur Vermeidung statischer NameError-Warnungen ---
 # Farben / Theme
@@ -186,9 +189,6 @@ def is_typo(user_answer, correct_answer, threshold=None):
     Erkennt Tippfehler basierend auf Tastatur-Layout und Wahrscheinlichkeit
     Verwendet die globalen Training-Einstellungen für die Toleranz
     """
-    # Wenn Tippfehler-Toleranz auf "Baby" (0) gesetzt ist, keine Tippfehler erlauben
-    if training_settings['typo_tolerance'] == 0:
-        return False
     
     # Nur lange Wörter (mehr als 6 Buchstaben) können als Tippfehler gewertet werden
     if len(correct_answer.strip()) <= 6:
@@ -196,8 +196,12 @@ def is_typo(user_answer, correct_answer, threshold=None):
     
     # Threshold basierend auf Tippfehler-Toleranz
     if threshold is None:
-        thresholds = [0.9, 0.7, 0.6, 0.4, 0.2]  # Baby, Leicht, Mittel, Schwer, Profi
-        threshold = thresholds[training_settings['typo_tolerance']]
+        thresholds = [0.6, 0.75, 1.0]  # Leicht, Mittel, Schwer
+        try:
+            threshold = thresholds[training_settings['typo_tolerance']]
+        except IndexError:
+            threshold = thresholds[1] # Fallback auf Mittel
+
     
     probability = calculate_typo_probability(user_answer, correct_answer)
     return probability >= threshold
@@ -213,15 +217,26 @@ ICON_DIR  = os.path.join(APP_DIR, 'icons')
 OCR_DIR   = os.path.join(APP_DIR, 'ocr')
 VOCAB_DIR = os.path.join(APP_DIR, 'vocabularies')
 STAT_DIR  = os.path.join(APP_DIR, 'stats')
-STREAK_FILE = os.path.join(STAT_DIR, 'streak.json')
 
 # ======================= Pfade zu CSV und JSON ==============================
 CSV_DATEI       = os.path.join(VOCAB_DIR, 'vokabeln.csv')
 STATISTIK_DATEI = os.path.join(STAT_DIR, 'statistik.json')
 
 # ======================= OpenAI API Key =======================================
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
+load_dotenv(override=True)  # <--- FORCE Reload from file (ignores old memory)
+
+# Client explizit initialisieren (verhindert Probleme mit alten global configs)
+api_key = os.getenv("OPENAI_API_KEY")
+client = None
+
+if api_key:
+    # Optional: Debug-Print (nur die ersten 10 Zeichen)
+    # print(f"API Key geladen: {api_key[:10]}...")
+    try:
+        client = OpenAI(api_key=api_key)
+    except Exception as e:
+        print(f"Fehler beim Initialisieren des OpenAI Clients: {e}")
+else:
     print("Warnung: OPENAI_API_KEY ist nicht gesetzt! Einige Funktionen sind möglicherweise deaktiviert.")
 
 # ======================= Lade-Icon-Funktion ===================================
@@ -240,6 +255,8 @@ def lade_icon(dateiname, size=(60,60)):
 # ======================= Globale Variablen & Config ===========================
 alle_vokabeln       = []
 vokabeln_zu_lernen  = []
+learning_queue      = []  # Warteschlange für den aktuellen Durchlauf
+initial_queue_len   = 0   # Startlänge der Queue für Fortschrittsanzeige
 punktzahl           = 100
 aktuelle_vokabel    = None
 runde_status        = {}
@@ -285,14 +302,10 @@ end_sprach_label = None
 
 # Training-Einstellungen
 training_settings = {
-    'typo_tolerance': 2,  # 0=Baby, 1=Leicht, 2=Mittel, 3=Schwer, 4=Profi
+    'typo_tolerance': 1,  # 0=Leicht, 1=Mittel, 2=Schwer
     'repetitions': 2,     # 1-5 Wiederholungen
     'mode': 'input',      # 'input' (Eingabefeld) oder 'choice' (3 Auswahl-Buttons)
     'direction': 'de_to_foreign', # oder 'foreign_to_de'
-    'session_goal': 10,
-    'exam_mode': False,
-    # Standardmäßig 6 Sekunden pro Vokabel im Prüfungsmodus
-    'exam_time_limit': 6
 }
 
 # Vokabel-Wiederholungs-Tracking
@@ -307,17 +320,13 @@ answer_frame = None
 input_frame = None
 choice_frame = None
 choice_buttons = []
-goal_label = None
 timer_label = None
-session_learned = set()
-exam_timer_job = None
-exam_time_left = 0
-exam_total_time = 0
-exam_blink_job = None
-exam_blink_on = False
-exam_session_mode_active = False
 timer_bar = None
 current_question_direction = None
+ACTION_MIN_INTERVAL_SEC = 0.5
+_action_next_time = 0.0
+_action_pending_job = None
+_action_pending = None
 
 # ======================= Hilfsfunktion: Alle Sprachen aus tessdata ============
 def get_all_tesseract_langs():
@@ -406,25 +415,6 @@ def statistik_speichern():
     export = {f"{de}|{en}": werte for (de,en), werte in vokabel_statistik.items()}
     with open(get_statistik_datei(), 'w', encoding='utf-8') as f:
         json.dump(export, f, indent=4, ensure_ascii=False)
-
-def streak_laden():
-    try:
-        if not os.path.exists(STAT_DIR):
-            os.makedirs(STAT_DIR)
-        if not os.path.exists(STREAK_FILE):
-            with open(STREAK_FILE, 'w', encoding='utf-8') as f:
-                json.dump({'last_goal_date': None, 'streak': 0}, f)
-        with open(STREAK_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return {'last_goal_date': None, 'streak': 0}
-
-def streak_speichern(data):
-    try:
-        with open(STREAK_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
 
 def statistik_bereinigen():
     gueltig = {(v['Deutsch'], v['Englisch']) for v in alle_vokabeln}
@@ -521,27 +511,39 @@ def extract_pairs_with_gpt(raw_text: str) -> list[dict]:
     "- Bereinige OCR-Fehler wie falsch erkannte Buchstaben oder zeichen und liefere die plausibelste, korrekte Schreibweise. "
     "- Nutze dein Wissen über häufig vorkommende Vokabeln, um Fehler zu korrigieren, aber erfinde keine neuen Paare! "
     "- Die Reihenfolge ist immer: Deutsch links, Fremdsprache rechts. "
+    "- Falls es für ein fremdsprachiges Wort mehrere deutsche Bedeutungen gibt (Synonyme), trenne diese durch Komma oder Schrägstrich (z.B. 'Überschwemmung, Flut; flood' oder 'laufen / rennen; to run'). "
     "Gib die Paare nur im Format 'Deutsch;Fremdsprache' zurück. "
-    "Beispiel: 'der Hund;the dog'. "
+    "Beispiel 1: 'der Hund;the dog'. "
+    "Beispiel 2: 'laufen, rennen;to run'. "
+    "Verwende pro Zeile genau ein Semikolon zwischen Dem Deutschen Wort oder mit Komma abgetrenten deutschen Wörtern und der Fremdsprache. "
     "Schreibe genau eine Zeile pro Vokabelpaar und ansonsten nichts."
 )
 
+    if not client:
+        messagebox.showerror("Fehler", "Kein OpenAI Client initialisiert (API Key fehlt).")
+        return []
 
-    resp = openai.chat.completions.create(
-        model="gpt-3.5-turbo",
-        temperature=0,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": raw_text}
-        ]
-    )
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": raw_text}
+            ]
+        )
+    except Exception as e:
+        error_msg = f"Fehler bei der Anfrage an OpenAI:\n{e}"
+        print(f"DEBUG ERROR DETAILS: {e}")  # Print to terminal for debugging
+        messagebox.showerror("API Fehler", error_msg)
+        return []
 
     lines = resp.choices[0].message.content.strip().splitlines()
     pairs = []
     for line in lines:
         if not line.strip():
             continue
-        parts = re.split(r"\s*[;,]\s*", line.strip(), maxsplit=1)
+        parts = line.strip().split(';' , 1)
         if len(parts) != 2:
             print(f"⚠️ Ungültige Zeile übersprungen: {line!r}")
             continue
@@ -647,8 +649,6 @@ def startbildschirm():
 
     def start_input_mode():
         training_settings['mode'] = 'input'
-        # Prüfungsmodus sicher deaktivieren
-        training_settings['exam_mode'] = False
         starte_neu()
 
     def start_choice_mode():
@@ -660,15 +660,6 @@ def startbildschirm():
         if count < 5:
             return  # still und leise nichts tun
         training_settings['mode'] = 'choice'
-        # Prüfungsmodus sicher deaktivieren
-        training_settings['exam_mode'] = False
-        starte_neu()
-
-    def start_exam_mode():
-        # Prüfungsmodus: fester Timer 6s pro Vokabel, Tipp ausgeschaltet
-        training_settings['mode'] = 'input'  # Prüfungsmodus immer als Eingabe
-        training_settings['exam_mode'] = True
-        training_settings['exam_time_limit'] = 8  # 6s + 2s Puffer pro Vokabel
         starte_neu()
 
     # Command global verfügbar machen, damit wir ihn bei gesperrtem Button entfernen können
@@ -729,16 +720,8 @@ def startbildschirm():
     start_choice_inner = inner
 
     global start_choice_lock_label, start_choice_button
-    start_choice_lock_label = ctk.CTkLabel(
-        inner,
-        text=("🔑" if USE_EMOJI else "Mindestens 5 Vokabeln")
-    )
-    start_choice_lock_label.pack(pady=(0, 6))
-    # Klick auf das Schloss/Hint löst ggf. Wackeln aus
-    try:
-        start_choice_lock_label.bind("<Button-1>", on_locked_choice_click)
-    except Exception:
-        pass
+    # Schloss-Icon entfernt
+    start_choice_lock_label = None
 
     start_choice_button = ctk.CTkButton(
         inner,
@@ -752,32 +735,6 @@ def startbildschirm():
         font=('Segoe UI', 30, 'bold')
     )
     start_choice_button.pack(side='bottom')
-
-    # Rechter Container: Prüfungsmodus-Start
-    exam_container = ctk.CTkFrame(btn_row, fg_color="transparent")
-    exam_container.configure(width=START_CHOICE_CONTAINER_WIDTH)
-    try:
-        exam_container.pack_propagate(False)
-    except Exception:
-        pass
-    exam_container.pack(side='left', padx=12)
-    exam_inner = ctk.CTkFrame(exam_container, fg_color="transparent")
-    try:
-        exam_inner.place(relx=0.5, rely=1.0, relheight=1.0, anchor='s', x=0, y=0)
-    except Exception:
-        pass
-    btn_exam = ctk.CTkButton(
-        exam_inner,
-        text="Prüfungsmodus",
-        fg_color=ERROR_COLOR,
-        hover_color="#b91c1c",
-        command=start_exam_mode,
-        width=280,
-        height=100,
-        corner_radius=30,
-        font=('Segoe UI', 30, 'bold')
-    )
-    btn_exam.pack(side='bottom')
 
     # Nach Aufbau: Containerbreite dynamisch an inneren Inhalt + Shake-Puffer anpassen
     def _adjust_choice_width():
@@ -802,7 +759,7 @@ def startbildschirm():
         pass
     # Klicks im gesamten Container abfangen (auch wenn Button disabled ist)
     try:
-        # Nur Button (und das Schloss-Label) sollen reagieren – nicht der leere Container daneben
+        # Button-Klick löst ggf. Wackeln aus, wenn gesperrt
         start_choice_button.bind("<Button-1>", on_locked_choice_click)
     except Exception:
         pass
@@ -871,9 +828,9 @@ def startbildschirm():
     right_wrap = ctk.CTkFrame(bottom_bar, fg_color="transparent")
     right_wrap.pack(side='right', fill='x', expand=True)
     ctk.CTkButton(
-        right_wrap, image=flagge_icon, text="",
-        width=48, height=48, corner_radius=24,
-        fg_color="transparent", hover_color="#f3f4f6",
+        right_wrap, text="Sprachen",
+        width=100, height=36, corner_radius=18,
+        fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR,
         command=sprache_verwalten_screen
     ).pack(side='right')
 
@@ -909,15 +866,19 @@ def einstellungen_screen():
         font=('Segoe UI', 18, 'bold')
     ).pack(pady=(20, 10))
     
-    typo_labels = ["Baby", "Leicht", "Mittel", "Schwer", "Profi"]
-    typo_colors = ["#dc2626", "#f59e0b", "#eab308", "#22c55e", "#059669"]
+    typo_labels = ["Leicht", "Mittel", "Schwer"]
+    typo_colors = ["#eab308", "#22c55e", "#059669"]
     
+    def _on_typo_change(value):
+        v = int(value)
+        training_settings['typo_tolerance'] = v
+        update_typo_label(v, typo_value_label, typo_labels, typo_colors)
     typo_slider = ctk.CTkSlider(
         typo_frame,
         from_=0,
-        to=4,
-        number_of_steps=4,
-        command=lambda value: update_typo_label(int(value), typo_value_label, typo_labels, typo_colors)
+        to=2,
+        number_of_steps=2,
+        command=_on_typo_change
     )
     typo_slider.set(training_settings['typo_tolerance'])
     typo_slider.pack(pady=10)
@@ -929,34 +890,6 @@ def einstellungen_screen():
         text_color=typo_colors[training_settings['typo_tolerance']]
     )
     typo_value_label.pack(pady=(0, 20))
-
-    # Wiederholungen
-    rep_frame = ctk.CTkFrame(container, fg_color="transparent")
-    rep_frame.pack(fill='x', pady=20)
-    
-    ctk.CTkLabel(
-        rep_frame, 
-        text="Wiederholungen pro Vokabel", 
-        font=('Segoe UI', 18, 'bold')
-    ).pack(pady=(20, 10))
-    
-    rep_slider = ctk.CTkSlider(
-        rep_frame,
-        from_=1,
-        to=5,
-        number_of_steps=4,
-        command=lambda value: update_rep_label(int(value), rep_value_label)
-    )
-    rep_slider.set(training_settings['repetitions'])
-    rep_slider.pack(pady=10)
-    
-    rep_value_label = ctk.CTkLabel(
-        rep_frame,
-        text=str(training_settings['repetitions']),
-        font=('Segoe UI', 16),
-        text_color=SUCCESS_COLOR
-    )
-    rep_value_label.pack(pady=(0, 20))
 
     # Richtung umschalten (Slider: 0=DE→Fremd, 1=Fremd→DE, 2=Gemischt)
     dir_frame = ctk.CTkFrame(container, fg_color="transparent")
@@ -979,29 +912,15 @@ def einstellungen_screen():
             dir_value_lbl.configure(text=dir_labels[idx])
         except Exception:
             pass
+        try:
+            training_settings['direction'] = dir_values[idx]
+        except Exception:
+            pass
     dir_slider.configure(command=_on_dir_change)
     dir_slider.pack(pady=6)
     # Wert-Anzeige zentriert unter dem Slider
     dir_value_lbl = ctk.CTkLabel(dir_frame, text=dir_labels[current_idx])
     dir_value_lbl.pack(pady=(6, 10))
-
-    # Session-Ziel
-    goal_frame = ctk.CTkFrame(container, fg_color="transparent")
-    goal_frame.pack(fill='x', pady=10)
-    ctk.CTkLabel(goal_frame, text="Session-Ziel (einzigartige richtige Vokabeln)", font=('Segoe UI', 18, 'bold')).pack(pady=(10,6))
-    goal_slider = ctk.CTkSlider(goal_frame, from_=5, to=100, number_of_steps=95)
-    goal_slider.set(training_settings.get('session_goal',10))
-    goal_slider.pack(pady=6)
-    goal_val_lbl = ctk.CTkLabel(goal_frame, text=str(training_settings.get('session_goal',10)))
-    goal_val_lbl.pack(pady=(6, 10))
-    def _on_goal_change(val):
-        try:
-            goal_val_lbl.configure(text=str(int(val)))
-        except Exception:
-            pass
-    goal_slider.configure(command=lambda v: _on_goal_change(v))
-
-    # Prüfungsmodus wurde auf den Startbildschirm verlagert (feste 6s/Frage)
 
     # Buttons
     button_frame = ctk.CTkFrame(container, fg_color="transparent")
@@ -1010,7 +929,6 @@ def einstellungen_screen():
     def start_training():
         # Einstellungen speichern
         training_settings['typo_tolerance'] = int(typo_slider.get())
-        training_settings['repetitions'] = int(rep_slider.get())
         # Richtung aus Slider übernehmen
         try:
             dir_idx = int(round(float(dir_slider.get())))
@@ -1018,8 +936,6 @@ def einstellungen_screen():
             dir_idx = 0
         dir_values = ['de_to_foreign', 'foreign_to_de', 'mixed']
         training_settings['direction'] = dir_values[dir_idx]
-        training_settings['session_goal'] = int(goal_slider.get())
-        training_settings['exam_mode'] = False  # Prüfungsmodus wird nur vom Startbildschirm gestartet
         # Training starten
         reset_for_new_attempt()
         try:
@@ -1054,9 +970,11 @@ def update_typo_label(value, label, labels, colors):
     """Aktualisiert das Label für die Tippfehler-Toleranz"""
     label.configure(text=labels[value], text_color=colors[value])
 
-def update_rep_label(value, label):
-    """Aktualisiert das Label für die Wiederholungen"""
-    label.configure(text=str(value))
+
+
+# ========================= Prüfungs-Einstellungen-Screen =====================
+# (Entfernt)
+
 
 #=============================Sprache-Verwaltung-Screen ==========================
 def sprache_verwalten_screen():
@@ -1199,7 +1117,7 @@ def trainer():
         setattr(trainer_sprach_label, '_is_sprach_label', True)
         trainer_sprach_label.pack(side='left', padx=20, pady=10)
 
-    # Tipp-Button (kann im Prüfungsmodus versteckt werden)
+    # Tipp-Button
     global tipp_button
     tipp_button = ctk.CTkButton(top, image=tipp_icon, text="", fg_color=BTN_COLOR,
                   width=40, height=40, corner_radius=20,
@@ -1226,20 +1144,6 @@ def trainer():
     frage_label = ctk.CTkLabel(content, text="", font=('Arial', 36))
     frage_label.grid(row=1, column=0, pady=(40, 28), sticky='n')
 
-    # Timer-Leiste + Zielanzeige unter der Frage
-    global timer_label, goal_label, timer_bar
-    # optional kleine Text-Zeile behalten (z.B. für Debug), aber primär Leiste nutzen
-    timer_label = ctk.CTkLabel(content, text="", font=('Segoe UI', 14), text_color=ERROR_COLOR)
-    timer_label.grid(row=1, column=0, pady=(0,0), sticky='ne', padx=20)
-    timer_bar = ctk.CTkProgressBar(content, width=900)
-    try:
-        timer_bar.set(1.0)
-    except Exception:
-        pass
-    timer_bar.grid(row=1, column=0, pady=(26,0), sticky='s')
-    goal_label = ctk.CTkLabel(content, text="", font=('Segoe UI', 16), text_color=SPRACH_COLOR)
-    goal_label.grid(row=1, column=0, pady=(0,0), sticky='nw', padx=20)
-
     # Antwortbereich (row 2): enthält entweder Eingabe oder Auswahl-Buttons
     global answer_frame, input_frame, choice_frame, choice_buttons
     answer_frame = ctk.CTkFrame(content, fg_color="transparent")
@@ -1259,13 +1163,13 @@ def trainer():
         btn = ctk.CTkButton(choice_frame, text=f"Option {i+1}", fg_color=BTN_COLOR,
                              width=720, height=72, corner_radius=18,
                              font=('Segoe UI', 24, 'bold'),
-                             command=lambda idx=i: choice_selected(idx))
+                             command=lambda idx=i: rate_limited_call(choice_selected, idx))
         btn.pack(pady=8, fill='x')
         choice_buttons.append(btn)
 
     # Button (row 3)
     btn_pruefen = ctk.CTkButton(content, text="Antwort prüfen", fg_color=BTN_COLOR,
-                  command=pruefe_antwort, width=360, height=60, corner_radius=20)
+                  command=lambda: rate_limited_call(pruefe_antwort), width=360, height=60, corner_radius=20)
     btn_pruefen.grid(row=3, column=0, pady=24, sticky='n')
 
     # Feedback (row 4)
@@ -1287,9 +1191,9 @@ def trainer():
     # Enter im Eingabefeld: erst prüfen, dann beim nächsten Enter weiter
     def on_entry_return(event):
         if feedback_active:
-            naechste_vokabel()
+            rate_limited_call(naechste_vokabel)
         else:
-            pruefe_antwort()
+            rate_limited_call(pruefe_antwort)
         return "break"  # Event nicht weiterreichen
     eingabe.bind('<Return>', on_entry_return)
     eingabe.bind('<KP_Enter>', on_entry_return)
@@ -1298,7 +1202,6 @@ def trainer():
     try:
         update_trainer_mode_ui()
         update_font_sizes()
-        update_goal_and_timer_ui()
     except Exception:
         pass
 
@@ -1372,11 +1275,8 @@ def statistik():
     ctk.CTkButton(footer, text="Zurück", command=lambda: zeige_frame('start'), fg_color=BTN_COLOR,
                   width=150, height=40, corner_radius=20).pack(side='left', padx=20)
 
-    ctk.CTkButton(footer, text="Alle löschen", command=alle_vokabeln_loeschen, fg_color=ERROR_COLOR,
-                  width=150, height=40, corner_radius=20).pack(side='right', padx=20)
-
-    ctk.CTkButton(footer, text="Speichern", command=save_editor, fg_color=BTN_COLOR,
-                  width=150, height=40, corner_radius=20).pack(side='right', padx=20)
+    ctk.CTkButton(footer, text="Statistik zurücksetzen", command=statistik_zuruecksetzen, fg_color=ERROR_COLOR,
+                  width=200, height=40, corner_radius=20).pack(side='right', padx=20)
 
 
 
@@ -1434,8 +1334,10 @@ def zeige_statistik():
     statistik_frame.grid_columnconfigure(3, weight=1)
 
 def statistik_zuruecksetzen():
-    for k in vokabel_statistik:
-        vokabel_statistik[k] = {'richtig': 0, 'falsch': 0}
+    if not messagebox.askyesno("Bestätigung", "Möchten Sie wirklich alle Statistiken zurücksetzen?"):
+        return
+    vokabel_statistik.clear()
+    vokabel_repetitions.clear()
     runde_status.clear()
     statistik_speichern()
     stat_feedback_label.configure(text=f"{EMOJI_OK}Statistik zurückgesetzt")
@@ -1451,7 +1353,7 @@ def editor():
     if aktuelle_sprache:
         ctk.CTkLabel(
             frame, 
-            text=f"Vokabel-Editor - {aktuelle_sprache.capitalize()}", 
+            text=f"Vokabel-Editor", 
             font=('Arial',30)
         ).pack(pady=(20,10))
     else:
@@ -1539,7 +1441,7 @@ def show_editor():
     neu_de = ctk.CTkEntry(editor_frame, placeholder_text="Deutsch")
     neu_en = ctk.CTkEntry(
     editor_frame,
-    placeholder_text=aktuelle_sprache.capitalize()
+    placeholder_text="Fremdsprache"
 )
     # Grün gefärbter Hinzufügen-Button
     add_btn = ctk.CTkButton(
@@ -1708,218 +1610,54 @@ def handle_global_keys(event):
             return "break"
 
     return None
+
+# ========================== Rate Limiting für Aktionen =======================
+def rate_limited_call(fn, *args, **kwargs):
+    """Erlaubt höchstens 2 Aktionen pro Sekunde. Bei schnellerem Klicken wird verzögert."""
+    global _action_next_time, _action_pending_job, _action_pending
+    now = time.time()
+    delay = _action_next_time - now
+    def _run():
+        global _action_pending_job, _action_pending, _action_next_time
+        _action_pending_job = None
+        _action_pending = None
+        try:
+            fn(*args, **kwargs)
+        finally:
+            _action_next_time = time.time() + ACTION_MIN_INTERVAL_SEC
+    # wenn noch gesperrt -> planen
+    if delay > 0:
+        _action_pending = (fn, args, kwargs)
+        try:
+            if _action_pending_job and app:
+                app.after_cancel(_action_pending_job)
+        except Exception:
+            pass
+        try:
+            _action_pending_job = app.after(int(delay * 1000), _run)
+        except Exception:
+            _run()
+        return False
+    # sofort ausführen
+    _run()
+    return True
     
 # ========================== Fortschritts-Anzeige =============================
 def update_fortschritt():
-    """Aktualisiert die Fortschrittsanzeige basierend auf den Wiederholungen"""
-    if not alle_vokabeln or not fortschritt:
+    """Aktualisiert die Fortschrittsanzeige basierend auf der verbleibenden Queue"""
+    if not fortschritt:
         return
     
-    required_repetitions = training_settings['repetitions']
-    
-    # Berechne den Gesamtfortschritt basierend auf allen Wiederholungen
-    total_possible_points = len(alle_vokabeln) * required_repetitions
-    current_points = 0
-    
-    for v in alle_vokabeln:
-        key = (v['Deutsch'], v['Englisch'])
-        correct_count = vokabel_repetitions.get(key, 0)
-        # Begrenze die Punkte auf die maximale Anzahl erforderlicher Wiederholungen
-        current_points += min(correct_count, required_repetitions)
-    
-    # Fortschritt berechnen (0.0 bis 1.0)
-    if total_possible_points > 0:
-        progress = current_points / total_possible_points
+    if initial_queue_len > 0:
+        current_len = len(learning_queue)
+        # Fortschritt = erledigter Anteil der ursprünglichen Last
+        # Wenn Queue wächst (durch Fehler), kann Fortschritt sinken
+        progress = max(0.0, min(1.0, (initial_queue_len - current_len) / initial_queue_len))
     else:
-        progress = 0.0
+        progress = 1.0 if not learning_queue else 0.0
     
     fortschritt.set(progress)
-    
-    # Optional: Zusätzliche Anzeige der aktuellen Statistik
-    completed_vocabs = sum(1 for v in alle_vokabeln 
-                          if vokabel_repetitions.get((v['Deutsch'], v['Englisch']), 0) >= required_repetitions)
-    
-    # Du könntest hier auch ein Label hinzufügen, das den detaillierten Fortschritt anzeigt:
-    # f"Fortschritt: {current_points}/{total_possible_points} | Fertig: {completed_vocabs}/{len(alle_vokabeln)}"
 
-def update_goal_and_timer_ui():
-    """Aktualisiert die Anzeige für Session-Ziel und Timer/Prüfungsmodus."""
-    try:
-        # Zielanzeige
-        if goal_label:
-            goal_label.configure(text=f"Ziel: {len(session_learned)}/{training_settings.get('session_goal', 10)} | Streak: {streak_laden().get('streak',0)}")
-        # Tipp-Button je nach Prüfungsmodus
-        if training_settings.get('exam_mode', False):
-            try:
-                if tipp_button and tipp_button.winfo_ismapped():
-                    tipp_button.pack_forget()
-            except Exception:
-                pass
-        else:
-            try:
-                if tipp_button and not tipp_button.winfo_ismapped():
-                    tipp_button.pack(side='right', padx=10, pady=10)
-            except Exception:
-                pass
-        # Timer-Bar & Label: nur im Prüfungsmodus sichtbar
-        if timer_bar:
-            if training_settings.get('exam_mode', False):
-                # Fortschritt (0..1) setzen
-                frac = 1.0
-                if exam_total_time > 0:
-                    frac = max(0.0, min(1.0, exam_time_left / exam_total_time))
-                try:
-                    timer_bar.set(frac)
-                except Exception:
-                    pass
-                # Farbe je nach verbleibendem Anteil: >0.4 grün, >0.2 orange, >0 rot
-                try:
-                    if frac <= 0.2:
-                        timer_bar.configure(progress_color=ERROR_COLOR)
-                    elif frac <= 0.4:
-                        timer_bar.configure(progress_color=WARNING_COLOR)
-                    else:
-                        timer_bar.configure(progress_color=SUCCESS_COLOR)
-                except Exception:
-                    pass
-            else:
-                # Nicht im Prüfungsmodus: Leiste verbergen/leer lassen
-                try:
-                    timer_bar.set(0)
-                except Exception:
-                    pass
-        if timer_label:
-            if training_settings.get('exam_mode', False):
-                # optional kurze Restzeit als Text
-                timer_label.configure(text=f"⏱ {max(exam_time_left,0)}s")
-            else:
-                timer_label.configure(text="")
-    except Exception:
-        pass
-
-def check_session_goal_reached():
-    """Prüft, ob das Session-Ziel erreicht wurde und aktualisiert den Streak."""
-    try:
-        goal = int(training_settings.get('session_goal', 10))
-        if len(session_learned) < goal:
-            return
-        data = streak_laden()
-        today = date.today().isoformat()
-        last = data.get('last_goal_date')
-        if last == today:
-            # bereits gezählt, nichts tun
-            pass
-        else:
-            # Streak-Regeln: fortsetzen, wenn letzter Tag gestern war, sonst auf 1
-            try:
-                from datetime import datetime, timedelta
-                if last:
-                    last_dt = datetime.fromisoformat(last).date()
-                    if last_dt == date.today() - timedelta(days=1):
-                        data['streak'] = int(data.get('streak', 0)) + 1
-                    else:
-                        data['streak'] = 1
-                else:
-                    data['streak'] = 1
-            except Exception:
-                data['streak'] = int(data.get('streak', 0)) + 1 if data.get('last_goal_date') else 1
-            data['last_goal_date'] = today
-            streak_speichern(data)
-        # UI aktualisieren
-        update_goal_and_timer_ui()
-    except Exception:
-        pass
-
-def exam_cancel_timer():
-    global exam_timer_job, exam_blink_job, exam_blink_on, exam_session_mode_active
-    try:
-        if exam_timer_job and app:
-            app.after_cancel(exam_timer_job)
-    except Exception:
-        pass
-    try:
-        if exam_blink_job and app:
-            app.after_cancel(exam_blink_job)
-    except Exception:
-        pass
-    exam_timer_job = None
-    exam_blink_job = None
-    exam_blink_on = False
-    exam_session_mode_active = False
-
-def _exam_blink_tick():
-    """Blink-Animation für die Timer-Leiste bei <=10% Restzeit."""
-    global exam_blink_job, exam_blink_on
-    try:
-        if not training_settings.get('exam_mode', False):
-            return
-        frac = (exam_time_left / exam_total_time) if exam_total_time > 0 else 0
-        if frac > 0.10:
-            # kein Blinken mehr nötig
-            return
-        # Toggle zwischen normaler Farbe und hellerem Rot
-        exam_blink_on = not exam_blink_on
-        if timer_bar:
-            if exam_blink_on:
-                timer_bar.configure(progress_color="#f87171")  # helleres Rot
-            else:
-                timer_bar.configure(progress_color=ERROR_COLOR)  # Standard Rot
-        exam_blink_job = app.after(400, _exam_blink_tick)
-    except Exception:
-        pass
-
-def exam_start_session_timer(total_seconds: int):
-    """Startet einen Sitzungs-Timer für den Prüfungsmodus (einmal pro Session)."""
-    global exam_time_left, exam_total_time, exam_timer_job, exam_session_mode_active
-    exam_cancel_timer()
-    if not training_settings.get('exam_mode', False):
-        return
-    exam_total_time = max(1, int(total_seconds))
-    exam_time_left = exam_total_time
-    exam_session_mode_active = True
-
-    def _tick():
-        global exam_time_left, exam_timer_job
-        exam_time_left -= 1
-        # Farb-/Fortschritt-Update
-        try:
-            update_goal_and_timer_ui()
-        except Exception:
-            pass
-        # Blinken starten/stoppen je nach Schwelle
-        try:
-            frac = (exam_time_left / exam_total_time) if exam_total_time > 0 else 0
-            if frac <= 0.10 and exam_blink_job is None:
-                # Blink starten
-                _exam_blink_tick()
-        except Exception:
-            pass
-        if exam_time_left <= 0:
-            exam_timer_job = None
-            # Zeit abgelaufen: Timer/Blinken stoppen, aktuelle Frage bewerten und Session beenden
-            try:
-                exam_cancel_timer()
-            except Exception:
-                pass
-            try:
-                if not feedback_active:
-                    pruefe_antwort(user_answer="")
-            except Exception:
-                pass
-            try:
-                endbildschirm()
-            except Exception:
-                pass
-            return
-        try:
-            exam_timer_job = app.after(1000, _tick)
-        except Exception:
-            exam_timer_job = None
-    try:
-        update_goal_and_timer_ui()
-        exam_timer_job = app.after(1000, _tick)
-    except Exception:
-        pass
 # ========================== Quiz-Logik =======================================
 def naechste_vokabel():
     global aktuelle_vokabel, feedback_active, weiter_button, current_question_direction
@@ -1955,30 +1693,27 @@ def naechste_vokabel():
     except Exception:
         pass
 
-    # Vokabeln filtern basierend auf Wiederholungs-Einstellung
-    required_repetitions = training_settings['repetitions']
-
-    # Vokabeln die noch nicht genug richtig beantwortet wurden
-    unvollstaendig = [
-        v for v in alle_vokabeln
-        if vokabel_repetitions.get((v['Deutsch'], v['Englisch']), 0) < required_repetitions
-    ]
-
-    # Prüfen ob alle Vokabeln gelernt wurden
-    if not unvollstaendig:
+    # Queue abarbeiten
+    if not learning_queue:
         endbildschirm()
         return
 
-    # Intelligente Auswahl (nicht dieselbe wie zuvor)
-    moegliche_vokabeln = unvollstaendig.copy()
-    if len(moegliche_vokabeln) > 1 and aktuelle_vokabel:
-        aktuelle_key = (aktuelle_vokabel['Deutsch'], aktuelle_vokabel['Englisch'])
-        moegliche_vokabeln = [v for v in moegliche_vokabeln if (v['Deutsch'], v['Englisch']) != aktuelle_key]
-    if not moegliche_vokabeln:
-        moegliche_vokabeln = unvollstaendig
-
-    # Zufällige Auswahl
-    aktuelle_vokabel = random.choice(moegliche_vokabeln)
+    # Versuche, direkte Wiederholung zu vermeiden
+    if len(learning_queue) > 1 and aktuelle_vokabel:
+        next_v = learning_queue[0]
+        # Vergleiche Inhalt, da es verschiedene Dict-Objekte sein könnten
+        if (next_v['Deutsch'] == aktuelle_vokabel['Deutsch'] and 
+            next_v['Englisch'] == aktuelle_vokabel['Englisch']):
+            # Suche erstes Element, das anders ist
+            for i in range(1, len(learning_queue)):
+                other = learning_queue[i]
+                if (other['Deutsch'] != aktuelle_vokabel['Deutsch'] or 
+                    other['Englisch'] != aktuelle_vokabel['Englisch']):
+                    # Tausche
+                    learning_queue[0], learning_queue[i] = learning_queue[i], learning_queue[0]
+                    break
+    
+    aktuelle_vokabel = learning_queue.pop(0)
 
     # Abfragerichtung berücksichtigen (inkl. Gemischt)
     set_dir = training_settings.get('direction', 'de_to_foreign')
@@ -2014,14 +1749,6 @@ def naechste_vokabel():
                 app.after(50, lambda: choice_buttons[0].focus_set())
         except Exception:
             pass
-    # Prüfungsmodus: Sitzungs-Timer nur einmal starten
-    try:
-        if training_settings.get('exam_mode', False) and not exam_session_mode_active:
-            per_vocab = int(training_settings.get('exam_time_limit', 8))  # 6 + 2
-            total = per_vocab * max(1, len(alle_vokabeln))
-            exam_start_session_timer(total)
-    except Exception:
-        pass
 
 def pruefe_antwort(event=None, user_answer=None):
     global punktzahl, feedback_active
@@ -2054,19 +1781,10 @@ def pruefe_antwort(event=None, user_answer=None):
     if training_settings.get('mode', 'input') == 'choice':
         set_choice_buttons_state('disabled')
 
-    # Im Prüfungsmodus: Session-Timer NICHT stoppen – er läuft über die gesamte Sitzung
-
     if ant.lower() == kor.lower():
         feedback_label.configure(text=f"{EMOJI_OK}Richtig!", text_color=SUCCESS_COLOR)
         vokabel_statistik[key]['richtig'] += 1
         vokabel_repetitions[key] = vokabel_repetitions.get(key, 0) + 1
-        # Session-Ziel: einzigartige Vokabel als gelernt zählen
-        try:
-            session_learned.add(key)
-            update_goal_and_timer_ui()
-            check_session_goal_reached()
-        except Exception:
-            pass
     else:
         if training_settings.get('mode', 'input') == 'input' and is_typo(ant, kor):
             feedback_label.configure(
@@ -2076,12 +1794,6 @@ def pruefe_antwort(event=None, user_answer=None):
             vokabel_statistik[key]['richtig'] += 1
             vokabel_repetitions[key] = vokabel_repetitions.get(key, 0) + 1
             punktzahl = max(0, punktzahl - 1)
-            try:
-                session_learned.add(key)
-                update_goal_and_timer_ui()
-                check_session_goal_reached()
-            except Exception:
-                pass
         else:
             feedback_label.configure(
                 text=f"{EMOJI_BAD}Falsch! Richtig: {aktuelle_vokabel['Englisch']}",
@@ -2089,6 +1801,8 @@ def pruefe_antwort(event=None, user_answer=None):
             )
             punktzahl = max(0, punktzahl - 5)
             vokabel_statistik[key]['falsch'] += 1
+            # Bei Fehler: Vokabel wieder hinten anstellen
+            learning_queue.append(aktuelle_vokabel)
 
     punktzahl_label.configure(text=f"Punktzahl: {punktzahl}")
     statistik_speichern()
@@ -2151,7 +1865,7 @@ def populate_choice_options():
     for i, text in enumerate(options):
         if i < len(choice_buttons):
             btn = choice_buttons[i]
-            btn.configure(text=text, command=lambda t=text: choice_selected_text(t), state="normal")
+            btn.configure(text=text, command=lambda t=text: rate_limited_call(choice_selected_text, t), state="normal")
             try:
                 btn.pack(pady=8, fill='x')
             except Exception:
@@ -2214,7 +1928,7 @@ def update_trainer_mode_ui():
 
 
 def update_start_choice_access():
-    """Aktualisiert den Zustand des Start-(Auswahl)-Buttons und zeigt/versteckt das Schloss/Schlüssel-Emoji.
+    """Aktualisiert den Zustand des Start-(Auswahl)-Buttons.
     Bedingung: Mindestens 5 Vokabeln in der aktuellen Sprache erforderlich.
     """
     try:
@@ -2222,66 +1936,29 @@ def update_start_choice_access():
     except Exception:
         count = 0
 
-    # Labels/Buttons existieren nur, wenn Startscreen aufgebaut ist
-    try:
-        btn = globals().get('start_choice_button')
-        lbl = globals().get('start_choice_lock_label')
-        if btn is None or lbl is None:
-            return
-        if count >= 5:
-            # Reaktivieren inkl. Original-Command
+    btn = globals().get('start_choice_button')
+    if not btn:
+        return
+
+    if count >= 5:
+        # Reaktivieren inkl. Original-Command
+        try:
             orig_cmd = globals().get('start_choice_command')
             if orig_cmd:
                 btn.configure(command=orig_cmd)
             btn.configure(state="normal", fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR)
-            # Emoji ausblenden
-            try:
-                lbl.pack_forget()
-            except Exception:
-                pass
-            # Buttons neu ausrichten (Lock-Label weg)
-            try:
-                # Eingabe-Button wieder ohne extra Padding
-                btn_inp = None
-                # Suche den Eingabe-Button innerhalb der btn_row-Kinder
-                # Wir haben keine direkte Referenz global gespeichert, deshalb versuchen wir es best-effort nicht zu brechen
-                # Falls vorhanden, entferne extra top-padding
-                # (Optional, da update beim Start ohnehin läuft)
-            except Exception:
-                pass
-        else:
-            # Vollständig sperren: state disabled und command entfernen
-            try:
-                btn.configure(command=lambda: None)
-            except Exception:
-                pass
-            btn.configure(state="disabled", fg_color=DISABLED_COLOR, hover_color=DISABLED_HOVER)
-            # Emoji zeigen
-            try:
-                if not lbl.winfo_ismapped():
-                    lbl.pack(pady=(0, 6))
-            except Exception:
-                pass
-            # Buttons neu ausrichten (Lock-Label sichtbar)
-            try:
-                # Trigger der gleichen Alignment-Funktion über after(0)
-                fn = None
-                def _align():
-                    try:
-                        lbl2 = globals().get('start_choice_lock_label')
-                        btn_inp2 = None
-                        if lbl2 and lbl2.winfo_ismapped():
-                            lbl2.update_idletasks()
-                            pad_top = lbl2.winfo_reqheight() + 6
-                        else:
-                            pad_top = 0
-                        # Wir kennen btn_input als lokale Variable in startbildschirm; hier fallback: nichts tun, da nicht leicht erreichbar
-                        # Die anfängliche after(0) im Startbildschirm richtet ohnehin aus.
-                    except Exception:
-                        pass
-                app.after(0, _align)
-            except Exception:
-                pass
+        except Exception:
+            pass
+    else:
+        # Vollständig sperren: state disabled und command entfernen
+        try:
+            btn.configure(command=lambda: None, state="disabled", fg_color=DISABLED_COLOR, hover_color=DISABLED_HOVER)
+        except Exception:
+            pass
+
+    # Nach Anpassung alle drei Start-Container ausrichten
+    try:
+        app.after(0, update_start_buttons_alignment)
     except Exception:
         pass
 
@@ -2336,10 +2013,10 @@ def on_locked_choice_click(event=None):
 def update_start_buttons_alignment():
     # Synchronisiert die Breite/Höhe beider Start-Container und richtet die Unterkanten aus.
     try:
-        left_cont = globals().get('start_input_container')
+        left_cont  = globals().get('start_input_container')
         right_cont = globals().get('start_choice_container')
-        left_in   = globals().get('start_input_inner')
-        right_in  = globals().get('start_choice_inner')
+        left_in    = globals().get('start_input_inner')
+        right_in   = globals().get('start_choice_inner')
         if not (left_cont and right_cont and left_in and right_in):
             return
         # benötigte Breiten ermitteln
@@ -2347,10 +2024,8 @@ def update_start_buttons_alignment():
         # Buttons ermitteln
         left_btn = globals().get('start_input_button')
         right_btn = globals().get('start_choice_button')
-        lock_lbl = globals().get('start_choice_lock_label')
         if left_btn: left_btn.update_idletasks()
         if right_btn: right_btn.update_idletasks()
-        if lock_lbl: lock_lbl.update_idletasks()
         # Breite anhand der größeren inneren Breite
         need_w = max(left_in.winfo_reqwidth(), right_in.winfo_reqwidth()) + 2 * START_CHOICE_SHAKE_AMPL + 12
         # gleiche Breite setzen
@@ -2359,9 +2034,7 @@ def update_start_buttons_alignment():
         # gleiche (minimale) Höhe: Buttonhöhe + optional Labelhöhe + kleiner Abstand
         btn_h_left = left_btn.winfo_reqheight() if left_btn else 0
         btn_h_right = right_btn.winfo_reqheight() if right_btn else 0
-        label_h = (lock_lbl.winfo_reqheight() + 6) if (lock_lbl and lock_lbl.winfo_ismapped()) else 0
-        # rechte Seite hat ggf. Label, linke nicht -> nutze max
-        need_h = max(btn_h_left, btn_h_right + label_h)
+        need_h = max(btn_h_left, btn_h_right)
         try:
             left_cont.configure(height=need_h)
             right_cont.configure(height=need_h)
@@ -2396,12 +2069,32 @@ def zeige_frame(name: str):
 # ====================== Reset- & Neustart-Funktionen ========================
 
 def reset_for_new_attempt():
-    global punktzahl, vokabeln_zu_lernen, runde_status, vokabel_repetitions
+    global punktzahl, vokabeln_zu_lernen, runde_status, vokabel_repetitions, learning_queue, initial_queue_len
     punktzahl = 100
     vokabeln_zu_lernen = alle_vokabeln.copy()
     random.shuffle(vokabeln_zu_lernen)
     runde_status.clear()
     vokabel_repetitions.clear()
+
+    # Queue basierend auf Statistik
+    learning_queue = []
+    for v in alle_vokabeln:
+        key = (v['Deutsch'], v['Englisch'])
+        stats = vokabel_statistik.get(key, {'richtig': 0, 'falsch': 0})
+        richtig = stats.get('richtig', 0)
+        falsch = stats.get('falsch', 0)
+        total = richtig + falsch
+        
+        if total == 0:
+            count = 1
+        else:
+            rate = richtig / total
+            count = 1 + int(round(4 * (1.0 - rate)))
+            
+        learning_queue.extend([v] * count)
+    
+    random.shuffle(learning_queue)
+    initial_queue_len = len(learning_queue)
 
 
 def starte_neu():
@@ -2409,19 +2102,7 @@ def starte_neu():
         messagebox.showerror("Fehler", "Keine Vokabeln verfügbar. Bitte fügen Sie zuerst Vokabeln hinzu.")
         return
     reset_for_new_attempt()
-    # Timer-Status für neue Session zurücksetzen
-    try:
-        exam_cancel_timer()
-        if timer_bar:
-            timer_bar.set(1.0 if training_settings.get('exam_mode', False) else 0)
-    except Exception:
-        pass
     zeige_frame('trainer')
-    # UI an aktuellen Modus (inkl. Prüfungsmodus) anpassen
-    try:
-        update_goal_and_timer_ui()
-    except Exception:
-        pass
     try:
         if punktzahl_label:
             punktzahl_label.configure(text=f"Punktzahl: {punktzahl}")
@@ -2457,6 +2138,8 @@ def endbildschirm():
                   command=lambda: zeige_frame('start')).pack(pady=8, fill='x')
 
     zeige_frame('ende')
+
+# ========================== Main =============================================
 
 # ============================ Hauptprogramm ==================================
 if __name__ == "__main__":
