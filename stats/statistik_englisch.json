@@ -1,86 +1,86 @@
 {
-    "verärgert/irritiert|annoyed": {
-        "richtig": 10,
-        "falsch": 3
-    },
-    "verwirrt|confused": {
-        "richtig": 6,
+    "erinnern|to remind": {
+        "richtig": 0,
         "falsch": 0
     },
-    "böse, sauer|cross": {
-        "richtig": 9,
-        "falsch": 7
-    },
-    "verängstigt|frightened": {
-        "richtig": 8,
-        "falsch": 1
-    },
-    "optimistisch|optimistic": {
-        "richtig": 10,
-        "falsch": 1
-    },
-    "froh, erfreut, zufrieden|pleased": {
-        "richtig": 9,
-        "falsch": 1
-    },
-    "wütend, wutentbrannt|furious": {
-        "richtig": 8,
-        "falsch": 2
-    },
-    "totunglücklich|heartbroken": {
-        "richtig": 8,
-        "falsch": 1
-    },
-    "entsetzt|terrified": {
-        "richtig": 9,
-        "falsch": 5
-    },
-    "begeistert|thrilled": {
-        "richtig": 14,
-        "falsch": 6
-    },
-    "ehemalig|ex-": {
-        "richtig": 5,
+    "Mardi Gras|Faschingsdienstag, Karnevalsfeiern in New Orleans": {
+        "richtig": 0,
         "falsch": 0
     },
-    "Bekannter|acquaintance": {
-        "richtig": 6,
-        "falsch": 1
-    },
-    "beschreibung|characterization": {
-        "richtig": 10,
-        "falsch": 3
-    },
-    "gebärde|gesture": {
-        "richtig": 5,
+    "brass band|Blaskapelle": {
+        "richtig": 0,
         "falsch": 0
     },
-    "zuversichtlich|hopeful": {
-        "richtig": 3,
+    "überfluten, überschwemmen|flood": {
+        "richtig": 0,
         "falsch": 0
     },
-    "hingezogen fühlen|to be attracted": {
-        "richtig": 4,
-        "falsch": 2
-    },
-    "zusammen sein|to be seeing": {
-        "richtig": 3,
-        "falsch": 1
-    },
-    "sich verlieben|to fall in love": {
-        "richtig": 3,
+    "Flut, Überschwemmung|flood": {
+        "richtig": 0,
         "falsch": 0
     },
-    "mit jm. gehen|to date sb.": {
-        "richtig": 6,
-        "falsch": 1
+    "Hurrikan, Orkan|hurricane": {
+        "richtig": 0,
+        "falsch": 0
     },
-    "schluss machen|to break up": {
-        "richtig": 4,
-        "falsch": 1
+    "Alligator|Alligator": {
+        "richtig": 0,
+        "falsch": 0
     },
-    "jm. kennenlernen|to get to know sb.": {
-        "richtig": 3,
+    "Sumpf|swamp": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Grad|degree": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Celsius|Celsius": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Fahrenheit|Fahrenheit": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Palme|palm tree": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "irgendwie|kind of": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "tropisch, Tropen-|tropical": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "im Zentrum|downtown": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "auf etwas zusteuern/zugehen|head for": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Balkon|balcony": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Stil|style": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "ekelhaft, widerlich|disgusting": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Huhn|chicken": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Dollar|Buck": {
+        "richtig": 0,
         "falsch": 0
     }
 }
