@@ -185,14 +185,6 @@ def calculate_typo_probability(user_answer, correct_answer):
     return probability
 
 def is_typo(user_answer, correct_answer, threshold=None):
-    """
-    Erkennt Tippfehler basierend auf Tastatur-Layout und Wahrscheinlichkeit
-    Verwendet die globalen Training-Einstellungen für die Toleranz
-    """
-    
-    # Nur lange Wörter (mehr als 6 Buchstaben) können als Tippfehler gewertet werden
-    if len(correct_answer.strip()) <= 6:
-        return False
     
     # Threshold basierend auf Tippfehler-Toleranz
     if threshold is None:
@@ -500,23 +492,79 @@ def save_vokabeln_csv():
 
 # ====================== OCR + GPT-Filter ======================================
 def extract_pairs_with_gpt(raw_text: str) -> list[dict]:
-    system = (
-    "Du arbeitest für ein Vokabeltrainer-Programm, das automatisch Vokabelpaare aus eingescannten Büchern und Arbeitsblättern importiert. "
-    "Der Eingabetext stammt direkt von einer OCR-Software und enthält oft zusätzliche Elemente wie Überschriften, Beispiele, unstrukturierte Kommentare oder falsche Erkennungen. "
-    "Deine Aufgabe ist es ausschließlich echte, vollständige und plausible Vokabelpaare zu extrahieren und zu liefern. "
-    "Erkenne automatisch, welche Wörter Deutsch und welche aus einer Fremdsprache sind (z. B. Englisch oder Französisch) und stelle sie korrekt zu einem Schulbuch-Vokabelpaar zusammen. "
-    "Achte darauf: "
-    "- Gib nur Paare zurück, bei denen klar erkennbar ist, dass sie ein Vokabelpaar sind. "
-    "- Ignoriere Überschriften, Beispiele, Sätze, Kommentare und unvollständige Einträge. "
-    "- Bereinige OCR-Fehler wie falsch erkannte Buchstaben oder zeichen und liefere die plausibelste, korrekte Schreibweise. "
-    "- Nutze dein Wissen über häufig vorkommende Vokabeln, um Fehler zu korrigieren, aber erfinde keine neuen Paare! "
-    "- Die Reihenfolge ist immer: Deutsch links, Fremdsprache rechts. "
-    "- Falls es für ein fremdsprachiges Wort mehrere deutsche Bedeutungen gibt (Synonyme), trenne diese durch Komma oder Schrägstrich (z.B. 'Überschwemmung, Flut; flood' oder 'laufen / rennen; to run'). "
-    "Gib die Paare nur im Format 'Deutsch;Fremdsprache' zurück. "
-    "Beispiel 1: 'der Hund;the dog'. "
-    "Beispiel 2: 'laufen, rennen;to run'. "
-    "Verwende pro Zeile genau ein Semikolon zwischen Dem Deutschen Wort oder mit Komma abgetrenten deutschen Wörtern und der Fremdsprache. "
-    "Schreibe genau eine Zeile pro Vokabelpaar und ansonsten nichts."
+    system = ("""
+    Du bist ein Extraktions- und Normalisierungsmodul für einen schulischen Vokabeltrainer.
+
+Der Eingabetext stammt aus einer OCR von Vokabellisten und enthält:
+- Überschriften
+- Beispielsätze
+- Lautschrift
+- Wortarten
+- Klammern, Schrägstriche, Zusätze wie (r/s), (of), (Kindes-)
+- Kommentare und sonstigen Müll
+
+DEINE EINZIGE AUFGABE:
+Extrahiere ausschließlich saubere, einfache und eindeutige Vokabelpaare.
+
+VERBINDLICHE REGELN (kein Interpretationsspielraum):
+
+1. Ausgabeformat:
+   Deutsch;Fremdsprache
+   – genau ein Semikolon
+   – genau eine Zeile pro Paar
+   – keine Überschriften, kein zusätzlicher Text
+
+2. Reihenfolge ist ZWINGEND:
+   Deutsch links, Fremdsprache rechts.
+   Wenn die OCR etwas anderes nahelegt, korrigiere es.
+
+3. Pro Wort genau EINE Übersetzung:
+   - Wähle die gebräuchlichste und einfachste Bedeutung.
+   - KEINE Synonyme
+   - KEINE Schrägstriche
+   - KEINE Kommas
+   - KEINE Alternativen
+
+4. Entferne konsequent ALLE Zusatzinformationen:
+   - Alle Klammern: (), [], {}. Auch wenn sie wichtig erscheinen wie "fall in love (with sb.)" lass die klamemrn weg also nur "fall in love"
+   - Geschlechtsmarker wie (r), (s), (e)
+   - Wortartangaben
+   - Zusätze wie „of“, „to“, „no pl“, Bindestrich-Erklärungen
+   - Lautschrift
+   - Präfix-Erklärungen wie „Ex-“ → **nur „ehemalig“**
+
+   Beispiele:
+   - „ehemalige(r, s)“ → „ehemalig“
+   - „(Kindes-)Erziehung“ → „Erziehung“
+   - „amount (of)“ → „Menge“
+   - „to trust“ → „vertrauen“
+
+5. Glätte die Sprache:
+   - Bevorzuge Grundform und Alltagssprache
+   - Keine Fach- oder Metaformen
+   - Keine Dopplungen
+
+6. OCR-Fehler korrigieren:
+   - falsche Buchstaben
+   - fehlende Leerzeichen
+   - kaputte Sonderzeichen
+   Aber: **Nichts erfinden**, nur eindeutig rekonstruierbare Wörter.
+
+7. Wenn ein Eintrag nicht eindeutig ein Vokabelpaar ist:
+   → komplett ignorieren.
+
+BEISPIELE (verbindlich):
+
+Eingabe: "Ex-; ehemalige(r, s)"
+Ausgabe: "ehemalig;ex"
+
+Eingabe: "amount (of); Betrag, Menge, Höhe"
+Ausgabe: "Menge;amount"
+
+"Eingabe: "to trust; trauen, vertrauen""
+"Ausgabe: "vertrauen;to trust""
+"
+halte dich strikt an diese Regeln."""
 )
 
     if not client:
@@ -525,7 +573,7 @@ def extract_pairs_with_gpt(raw_text: str) -> list[dict]:
 
     try:
         resp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             temperature=0,
             messages=[
                 {"role": "system", "content": system},

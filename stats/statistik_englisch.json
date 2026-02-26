@@ -1,85 +1,93 @@
 {
-    "erinnern|to remind": {
+    "Freundschaft|friendship": {
         "richtig": 0,
         "falsch": 0
     },
-    "Mardi Gras|Faschingsdienstag, Karnevalsfeiern in New Orleans": {
+    "Sicherheit|safety": {
         "richtig": 0,
         "falsch": 0
     },
-    "brass band|Blaskapelle": {
+    "Bitte|request": {
         "richtig": 0,
         "falsch": 0
     },
-    "überfluten, überschwemmen|flood": {
+    "schockieren|to shock": {
         "richtig": 0,
         "falsch": 0
     },
-    "Flut, Überschwemmung|flood": {
+    "geheim|secret": {
+        "richtig": 1,
+        "falsch": 1
+    },
+    "indirekt|indirectly": {
         "richtig": 0,
         "falsch": 0
     },
-    "Hurrikan, Orkan|hurricane": {
+    "hingezogen fühlen|to be attracted to": {
         "richtig": 0,
         "falsch": 0
     },
-    "Alligator|Alligator": {
+    "zusammen sein|to be seeing": {
         "richtig": 0,
         "falsch": 0
     },
-    "Sumpf|swamp": {
+    "verlieben|to fall in love": {
         "richtig": 0,
         "falsch": 0
     },
-    "Grad|degree": {
+    "gehen|to date": {
         "richtig": 0,
         "falsch": 0
     },
-    "Celsius|Celsius": {
+    "trennen|to break up": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "kennenlernen|to get to know": {
         "richtig": 0,
         "falsch": 0
     },
-    "Fahrenheit|Fahrenheit": {
+    "verärgert|annoyed": {
         "richtig": 0,
         "falsch": 0
     },
-    "Palme|palm tree": {
+    "verwirrt|confused": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "böse|cross": {
         "richtig": 0,
         "falsch": 0
     },
-    "irgendwie|kind of": {
+    "verängstigt|frightened": {
         "richtig": 0,
         "falsch": 0
     },
-    "tropisch, Tropen-|tropical": {
+    "hoffnungsvoll|hopeful": {
         "richtig": 0,
         "falsch": 0
     },
-    "im Zentrum|downtown": {
+    "optimistisch|optimistic": {
         "richtig": 0,
         "falsch": 0
     },
-    "auf etwas zusteuern/zugehen|head for": {
+    "zufrieden|pleased": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "wütend|furious": {
         "richtig": 0,
         "falsch": 0
     },
-    "Balkon|balcony": {
+    "todunglücklich|heartbroken": {
         "richtig": 0,
         "falsch": 0
     },
-    "Stil|style": {
+    "entsetzt|terrified": {
         "richtig": 0,
         "falsch": 0
     },
-    "ekelhaft, widerlich|disgusting": {
-        "richtig": 0,
-        "falsch": 0
-    },
-    "Huhn|chicken": {
-        "richtig": 0,
-        "falsch": 0
-    },
-    "Dollar|Buck": {
+    "begeistert|thrilled": {
         "richtig": 0,
         "falsch": 0
     }
