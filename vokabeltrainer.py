@@ -5,13 +5,19 @@ import json
 import csv
 import random
 import re
+import socket
+import threading
+from urllib.parse import urljoin
+from flask import Flask, request, render_template_string
+from werkzeug.utils import secure_filename
+import qrcode
 import openai
 from openai import OpenAI  # <-- Import für den modernen Client
 import pytesseract
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from PIL import Image
+from PIL import Image, ImageEnhance
 from datetime import date
 import time
 from dotenv import load_dotenv
@@ -43,6 +49,7 @@ haus_icon  = None
 birne_icon = None
 tipp_icon  = None
 flagge_icon = None
+global _resize_job
 
 # Frames-Registry
 frames = {}
@@ -56,10 +63,41 @@ def endbildschirm():
     pass
 
 def update_fenstertitel():
-    pass
+    try:
+        if not app:
+            return
+        if aktuelle_sprache:
+            app.title(f"Vokabeltrainer - {aktuelle_sprache.capitalize()}")
+        else:
+            app.title("Vokabeltrainer")
+    except Exception:
+        pass
 
 def update_sprachanzeige():
-    pass
+    text = aktuelle_sprache.capitalize() if aktuelle_sprache else "Keine Sprache"
+
+    labels = [
+        globals().get('sprach_anzeige_label'),
+        globals().get('trainer_sprach_label'),
+        globals().get('end_sprach_label')
+    ]
+
+    for lbl in labels:
+        try:
+            if lbl is not None and lbl.winfo_exists():
+                lbl.configure(text=text)
+        except Exception:
+            pass
+
+    try:
+        stat_title = globals().get('statistik_titel_label')
+        if stat_title is not None and stat_title.winfo_exists():
+            if aktuelle_sprache:
+                stat_title.configure(text=f"Statistiken - {aktuelle_sprache.capitalize()}")
+            else:
+                stat_title.configure(text="Statistiken")
+    except Exception:
+        pass
 
 def update_font_sizes(event=None):
     pass
@@ -185,7 +223,6 @@ def calculate_typo_probability(user_answer, correct_answer):
     return probability
 
 def is_typo(user_answer, correct_answer, threshold=None):
-    
     # Threshold basierend auf Tippfehler-Toleranz
     if threshold is None:
         thresholds = [0.6, 0.75, 1.0]  # Leicht, Mittel, Schwer
@@ -281,6 +318,7 @@ start_input_inner = None
 
 statistik_frame     = None
 stat_feedback_label = None
+statistik_titel_label = None
 editor_frame        = None
 editor_feedback     = None
 neu_de              = None
@@ -606,7 +644,36 @@ halte dich strikt an diese Regeln."""
 
 
 def extract_pairs_from_image(path: str) -> list[dict]:
-    img = Image.open(path)
+    # Bild öffnen
+    img_raw = Image.open(path)
+    
+    # 0. EXIF-Daten (Rotation) anwenden und erzwingen als reines RGB
+    # Verhindert Format-Bugs (wie versteckte Alphakanäle in PNGs oder komische JPEGs vom Handy)
+    try:
+        from PIL import ImageOps
+        img_raw = ImageOps.exif_transpose(img_raw)
+    except Exception:
+        pass
+    
+    img = img_raw.convert('RGB')
+    
+    # --- PREPROCESSING FÜR HANDYBILDER ---
+    # 1. Konvertierung in Graustufen
+    img = img.convert('L')
+    
+    # 2. Skalierung bei extrem großen Handyfotos verhindern
+    # (Tesseract tut sich oft schwer bei > 4000px Bildern)
+    max_size = 2500
+    if max(img.size) > max_size:
+        ratio = max_size / max(img.size)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+    
+    # 3. Kontrast leicht erhöhen (hilft bei schwacher Beleuchtung)
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(1.5)
+    # ---------------------------------------
+
     configure_tesseract_path()
     alle_sprachen = get_all_tesseract_langs()
     if not alle_sprachen:
@@ -616,7 +683,220 @@ def extract_pairs_from_image(path: str) -> list[dict]:
         lang=alle_sprachen,
         config="--oem 1 --psm 6"
     )
+    
+    # DEBUG: RAW-Text von Tesseract im Terminal ausgeben
+    print("=== TESSERACT RAW TEXT ===")
+    print(raw)
+    print("==========================")
+    
+    if not raw.strip():
+        print("DEBUG: Tesseract hat auf dem Bild keinen Text gefunden.")
+        return []
+        
     return extract_pairs_with_gpt(raw)
+
+
+# ====================== Handy-Upload via Flask (QR-Code) =====================
+qr_popup_window = None
+temp_upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_uploads")
+os.makedirs(temp_upload_dir, exist_ok=True)
+
+flask_app = Flask(__name__)
+# Reduziere Flask Logging output in der Konsole
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+def get_local_ip():
+    """ Ermittelt die lokale IP-Adresse zuverlässig über einen UDP-Verbindungsversuch. """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Pingt keinen Inhalt, baut nur die Route auf
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+def get_free_port():
+    """ Sucht einen freien, zufälligen Port """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+FLASK_PORT = get_free_port()
+
+@flask_app.route('/')
+def upload_form():
+    html = '''
+    <!doctype html>
+    <html lang="de">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+      <title>Vokabel-Upload</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; text-align: center; padding: 20px; background-color: #f9fafb; color: #1f2937; }
+        h1 { font-size: 1.5rem; margin-bottom: 20px; }
+        .upload-btn-wrapper { position: relative; overflow: hidden; display: inline-block; cursor: pointer; }
+        .btn { border: none; background-color: #6366f1; color: white; padding: 15px 30px; font-size: 1.2rem; border-radius: 8px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .upload-btn-wrapper input[type=file] { padding: 40px; font-size: 100px; position: absolute; left: 0; top: 0; opacity: 0; cursor: pointer; height: 100%; width: 100%; }
+        #loading { display: none; margin-top: 20px; font-weight: bold; color: #6366f1; }
+      </style>
+      <script>
+        function showLoading() {
+           document.getElementById('upload-area').style.display = 'none';
+           document.getElementById('loading').style.display = 'block';
+        }
+      </script>
+    </head>
+    <body>
+      <h1>📸 Buchseite abfotografieren</h1>
+      <div id="upload-area">
+          <form method="POST" action="/upload" enctype="multipart/form-data" onsubmit="showLoading()">
+            <div class="upload-btn-wrapper">
+              <button class="btn">Kamera oder Galerie</button>
+              <input type="file" name="file" accept="image/*" required onchange="this.form.submit(); showLoading();" />
+            </div>
+            <p style="margin-top:10px; color:#6b7280; font-size:0.9rem;">Wähle, ob du ein neues<br>oder ein bestehendes Foto nutzen möchtest</p>
+          </form>
+      </div>
+      <div id="loading">Bild wird gesendet...<br>⏳ Bitte kurz warten</div>
+    </body>
+    </html>
+    '''
+    return render_template_string(html)
+
+@flask_app.route('/upload', methods=['POST'])
+def handle_upload():
+    if 'file' not in request.files:
+        return "Kein Bild gesendet.", 400
+    file = request.files['file']
+    if file.filename == '':
+        return "Keine Datei ausgewählt.", 400
+    if file:
+        filename = secure_filename(file.filename)
+        if not filename:
+            filename = f"image_{int(time.time())}.jpg"
+        filepath = os.path.join(temp_upload_dir, filename)
+        file.save(filepath)
+        
+        # UI-Update und OCR sicher im Main-Thread starten!
+        app.after(100, lambda: process_mobile_upload(filepath))
+        
+        success_html = '''
+        <!doctype html>
+        <html lang="de">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Erfolg</title>
+          <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; padding: 40px 20px; background-color: #f0fdf4; color: #166534; }
+              h1 { font-size: 2rem; margin-bottom: 20px; }
+              p { font-size: 1.1rem; color: #15803d; }
+          </style>
+        </head>
+        <body>
+          <h1>Das hat geklappt!</h1>
+          <p>Du kannst das Handy jetzt weglegen</p>
+        </body>
+        </html>
+        '''
+        return render_template_string(success_html)
+    
+    return "Fehler beim Verarbeiten des Bildes.", 400
+
+def get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+FLASK_PORT = get_free_port()
+
+def start_flask_server():
+    # Läuft im Hintergrund auf einem dynamischen Port (vermeidet 'Address already in use' auf macOS)
+    flask_app.run(host='0.0.0.0', port=FLASK_PORT, debug=False, use_reloader=False)
+
+# Flask Server als Daemon starten, damit er beendet wird, wenn das Hauptprogramm schließt
+threading.Thread(target=start_flask_server, daemon=True).start()
+
+def show_qr_popup():
+    """ Zeigt den QR-Code als Toplevel Fenster an """
+    global qr_popup_window
+    if qr_popup_window is not None and qr_popup_window.winfo_exists():
+        qr_popup_window.lift()
+        return
+
+    ip = get_local_ip()
+    url = f"http://{ip}:{FLASK_PORT}"
+
+    # Neues Toplevel Fenster
+    qr_popup_window = ctk.CTkToplevel(app)
+    qr_popup_window.title("Handy Upload")
+    qr_popup_window.geometry("400x450")
+    qr_popup_window.attributes("-topmost", True)
+    qr_popup_window.focus()
+    qr_popup_window.grab_set()  # Verhindert Klicks im Hauptfenster
+
+    lbl_info = ctk.CTkLabel(qr_popup_window, text="Mit dem Handy scannen!", font=('Arial', 18, 'bold'))
+    lbl_info.pack(pady=(20, 5))
+
+    lbl_sub = ctk.CTkLabel(qr_popup_window, text=f"Stelle sicher,\ndass Mac und Handy\nim selben WLAN sind.", text_color=LIGHT_TEXT)
+    lbl_sub.pack(pady=(0, 15))
+
+    # QR Code generieren
+    qr = qrcode.QRCode(version=1, box_size=8, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    # Extrahiere das eigentliche PIL-Bild-Objekt
+    pil_img_wrapper = qr.make_image(fill_color="black", back_color="white")
+    pil_img = pil_img_wrapper.get_image()
+    
+    ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(250, 250))
+    img_lbl = ctk.CTkLabel(qr_popup_window, image=ctk_img, text="")
+    img_lbl.pack(pady=10)
+
+    lbl_url = ctk.CTkLabel(qr_popup_window, text=url, font=('Courier New', 12), text_color=SUCCESS_COLOR)
+    lbl_url.pack(pady=(5,20))
+
+def process_mobile_upload(filepath):
+    """ Wird vom Flask-Thread (via app.after) ausgelöst, wenn ein Bild da ist. """
+    global qr_popup_window
+    if qr_popup_window is not None and qr_popup_window.winfo_exists():
+        qr_popup_window.destroy()  # Popup schließen
+
+    editor_feedback.configure(text="Handy-Bild empfangen. Import läuft…", text_color=SUCCESS_COLOR)
+    app.update_idletasks()
+
+    try:
+        neue = extract_pairs_from_image(filepath)
+    except Exception as e:
+        editor_feedback.configure(text=f"Fehler: {e}", text_color=ERROR_COLOR)
+        return
+
+    if not neue:
+        editor_feedback.configure(text="⚠️ Kein lesbarer Text gefunden (Foto unscharf?)", text_color=WARNING_COLOR)
+        app.update_idletasks()
+        return
+
+    imported = 0
+    bestehend = {(v['Deutsch'], v['Englisch']) for v in alle_vokabeln}
+    for v in neue:
+        tup = (v['Deutsch'], v['Englisch'])
+        if tup not in bestehend:
+            alle_vokabeln.append(v)
+            bestehend.add(tup)
+            imported += 1
+    
+    save_vokabeln_csv()
+    show_editor()
+    editor_feedback.configure(text=f"✅ {imported} Vokabel(n) vom Handy importiert!", text_color=SUCCESS_COLOR)
+
 
 # ====================== Upload- und Import-Funktion ==========================
 def upload_and_import():
@@ -1276,7 +1556,7 @@ def trainer():
 
 # =========================== Statistik-Screen =================================
 def statistik():
-    global stat_feedback_label, statistik_frame
+    global stat_feedback_label, statistik_frame, statistik_titel_label
     frame = ctk.CTkFrame(app); frames['statistik'] = frame
 
     outer = ctk.CTkFrame(frame)
@@ -1295,14 +1575,9 @@ def statistik():
                   command=lambda: zeige_frame('start')).pack(side='left', padx=10, pady=10)
 
     # Sprachanzeige/Überschrift
-    if aktuelle_sprache:
-        ctk.CTkLabel(
-            top,
-            text=f"Statistiken - {aktuelle_sprache.capitalize()}",
-            font=('Arial', 30)
-        ).pack(side='left', padx=20, pady=10)
-    else:
-        ctk.CTkLabel(top, text="Statistiken", font=('Arial', 30)).pack(side='left', padx=20, pady=10)
+    statistik_titel_label = ctk.CTkLabel(top, text="Statistiken", font=('Arial', 30))
+    statistik_titel_label.pack(side='left', padx=20, pady=10)
+    update_sprachanzeige()
     stat_feedback_label = ctk.CTkLabel(top, text="", font=('Arial', 16), text_color="green")
     stat_feedback_label.pack(side='right', padx=20, pady=10)
 
@@ -1408,8 +1683,17 @@ def editor():
         ctk.CTkLabel(frame, text="Vokabel-Editor", font=('Arial',30)).pack(pady=(20,10))
     global editor_feedback
     editor_feedback = ctk.CTkLabel(frame, text="", font=('Arial',8), text_color="green"); editor_feedback.pack(pady=(0,10))
-    ctk.CTkButton(frame, text="Bild importieren…", command=upload_and_import, fg_color=BTN_COLOR,
-                  width=200, height=40, corner_radius=20).pack(pady=(0,10))
+    
+    # Neues Frame, um die beiden Import-Buttons nebeneinander zu setzen
+    btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+    btn_frame.pack(pady=(0,10))
+    
+    ctk.CTkButton(btn_frame, text="💻 Bild von PC…", command=upload_and_import, fg_color=BTN_COLOR,
+                  width=180, height=40, corner_radius=20).pack(side='left', padx=10)
+                  
+    ctk.CTkButton(btn_frame, text="📱 Vom Handy knipsen (QR)", command=show_qr_popup, fg_color=SPRACH_COLOR, text_color="white",
+                  width=220, height=40, corner_radius=20).pack(side='left', padx=10)
+
     global editor_frame
     editor_frame = ctk.CTkScrollableFrame(frame, corner_radius=0); editor_frame.pack(fill='both', expand=True, padx=20, pady=10)
     for col in range(3):
@@ -1588,23 +1872,25 @@ def zeige_tipp():
     if not aktuelle_vokabel:
         return
 
+    direction = current_question_direction or training_settings.get('direction', 'de_to_foreign')
+    zielwort = (aktuelle_vokabel['Englisch'] if direction != 'foreign_to_de' else aktuelle_vokabel['Deutsch']).strip().lower()
+
     artikel = [
         "to ", "a ", "an ", "the ",
         "le ", "la ", "les ", "l'",
         "un ", "une ",
         "des ", "du ",
-        "de la ", "de l'"
+        "de la ", "de l'",
+        "der ", "die ", "das ", "ein ", "eine ", "den ", "dem ", "des "
     ]
-
-    eng = aktuelle_vokabel['Englisch'].strip().lower()
 
     prefix = ""
     for art in artikel:
-        if eng.startswith(art):
+        if zielwort.startswith(art):
             prefix = art
             break
 
-    core = eng[len(prefix):].strip()
+    core = zielwort[len(prefix):].strip()
     words = core.split()
     if len(words) <= 1:
         w = words[0] if words else ""
@@ -1836,7 +2122,7 @@ def pruefe_antwort(event=None, user_answer=None):
     else:
         if training_settings.get('mode', 'input') == 'input' and is_typo(ant, kor):
             feedback_label.configure(
-                text=f"{EMOJI_PART}Fast richtig! \nRichtig: {aktuelle_vokabel['Englisch']}",
+                text=f"{EMOJI_PART}Fast richtig! \nRichtig: {kor}",
                 text_color=WARNING_COLOR
             )
             vokabel_statistik[key]['richtig'] += 1
@@ -1844,7 +2130,7 @@ def pruefe_antwort(event=None, user_answer=None):
             punktzahl = max(0, punktzahl - 1)
         else:
             feedback_label.configure(
-                text=f"{EMOJI_BAD}Falsch! Richtig: {aktuelle_vokabel['Englisch']}",
+                text=f"{EMOJI_BAD}Falsch! Richtig: {kor}",
                 text_color=ERROR_COLOR
             )
             punktzahl = max(0, punktzahl - 5)

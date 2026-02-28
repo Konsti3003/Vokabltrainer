@@ -1,59 +1,47 @@
 {
     "Freundschaft|friendship": {
         "richtig": 0,
-        "falsch": 0
+        "falsch": 1
     },
     "Sicherheit|safety": {
         "richtig": 0,
-        "falsch": 0
+        "falsch": 1
     },
     "Bitte|request": {
         "richtig": 0,
         "falsch": 0
     },
-    "schockieren|to shock": {
+    "Wunsch|request": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "schockieren|shock": {
         "richtig": 0,
         "falsch": 0
     },
     "geheim|secret": {
-        "richtig": 1,
-        "falsch": 1
+        "richtig": 0,
+        "falsch": 2
     },
-    "indirekt|indirectly": {
+    "mit jm. gehen|date": {
         "richtig": 0,
         "falsch": 0
     },
-    "hingezogen fühlen|to be attracted to": {
+    "schließen|break up": {
         "richtig": 0,
         "falsch": 0
     },
-    "zusammen sein|to be seeing": {
+    "trennen|break up": {
         "richtig": 0,
         "falsch": 0
     },
-    "verlieben|to fall in love": {
+    "verärgert sein|annoyed": {
         "richtig": 0,
-        "falsch": 0
-    },
-    "gehen|to date": {
-        "richtig": 0,
-        "falsch": 0
-    },
-    "trennen|to break up": {
-        "richtig": 1,
-        "falsch": 0
-    },
-    "kennenlernen|to get to know": {
-        "richtig": 0,
-        "falsch": 0
-    },
-    "verärgert|annoyed": {
-        "richtig": 0,
-        "falsch": 0
+        "falsch": 2
     },
     "verwirrt|confused": {
-        "richtig": 0,
-        "falsch": 1
+        "richtig": 1,
+        "falsch": 0
     },
     "böse|cross": {
         "richtig": 0,
@@ -65,29 +53,29 @@
     },
     "hoffnungsvoll|hopeful": {
         "richtig": 0,
-        "falsch": 0
+        "falsch": 1
     },
     "optimistisch|optimistic": {
         "richtig": 0,
         "falsch": 0
     },
-    "zufrieden|pleased": {
-        "richtig": 1,
-        "falsch": 0
-    },
-    "wütend|furious": {
+    "froh|pleased": {
         "richtig": 0,
         "falsch": 0
     },
-    "todunglücklich|heartbroken": {
+    "untröstlich|heartbroken": {
         "richtig": 0,
         "falsch": 0
     },
-    "entsetzt|terrified": {
+    "ängstlich|terrified": {
         "richtig": 0,
-        "falsch": 0
+        "falsch": 2
     },
-    "begeistert|thrilled": {
+    "aufgeregt|thrilled": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "verliebt sein|sich fall in love with sb.": {
         "richtig": 0,
         "falsch": 0
     }

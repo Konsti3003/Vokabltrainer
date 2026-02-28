@@ -1,1 +1,74 @@
-{}
+{
+    "Tradition|la tradition": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "stattfinden|avoir lieu": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "anbieten|proposer": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Umzug|le défilé": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Feuerwerk|le feu d'artifice": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Leser|le lecteur": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "sich amüsieren|s'amuser": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "ähnlich sein|ressembler": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "wenn|si": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "schenken|offrir": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "sich verteidigen|défendre": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Mut|le courage": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "werfen|jeter": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Material|en": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "Schlüssel|la clé": {
+        "richtig": 0,
+        "falsch": 1
+    },
+    "zerbrechen|casser": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "verkleiden|se déguiser": {
+        "richtig": 0,
+        "falsch": 0
+    },
+    "jeder|jede;jedes;chaque": {
+        "richtig": 0,
+        "falsch": 0
+    }
+}
