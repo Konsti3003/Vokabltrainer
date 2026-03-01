@@ -18,7 +18,7 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageEnhance
-from datetime import date
+from datetime import date, datetime
 import time
 from dotenv import load_dotenv
 
@@ -100,7 +100,75 @@ def update_sprachanzeige():
         pass
 
 def update_font_sizes(event=None):
-    pass
+    """Passt Schriftgrößen und Widget-Breiten dynamisch an die aktuelle Fenstergröße an."""
+    global _resize_job
+    _resize_job = None
+    if not app:
+        return
+    try:
+        w = app.winfo_width()
+        h = app.winfo_height()
+    except Exception:
+        return
+    if w < 100 or h < 100:
+        return
+
+    # Skalierungsfaktor relativ zur Basis-Auflösung 1200×800
+    BASE_W, BASE_H = 1200, 800
+    scale = min(w / BASE_W, h / BASE_H)
+    scale = max(0.5, min(scale, 2.0))  # auf sinnvollen Bereich begrenzen
+
+    def fs(base):
+        """Skalierte Schriftgröße (Minimum 8)."""
+        return max(8, int(base * scale))
+
+    def safe_cfg(widget_name, **kwargs):
+        """Konfiguriert ein Widget sicher per globalem Namen."""
+        widget = globals().get(widget_name)
+        try:
+            if widget is not None and widget.winfo_exists():
+                widget.configure(**kwargs)
+        except Exception:
+            pass
+
+    # ── Trainer-Bildschirm ────────────────────────────────────────────────
+    safe_cfg('frage_label',     font=('Arial', fs(36)))
+    safe_cfg('eingabe',         font=('Arial', fs(22)),
+                                width=max(300, int(900 * scale)))
+    safe_cfg('feedback_label',  font=('Arial', fs(22)))
+    safe_cfg('punktzahl_label', font=('Arial', fs(22)))
+    safe_cfg('fortschritt',     width=max(300, int(900 * scale)))
+    safe_cfg('btn_pruefen',
+             font=('Segoe UI', fs(18), 'bold'),
+             width=max(180, int(360 * scale)),
+             height=max(40, int(60 * scale)))
+
+    # Choice-Buttons (Liste)
+    try:
+        btn_w = max(300, int(720 * scale))
+        btn_h = max(40,  int(72  * scale))
+        for btn in choice_buttons:
+            if btn is not None and btn.winfo_exists():
+                btn.configure(
+                    font=('Segoe UI', fs(24), 'bold'),
+                    width=btn_w,
+                    height=btn_h,
+                )
+    except Exception:
+        pass
+
+    # ── Sprachanzeige-Labels (Start- & Trainer-Screen) ────────────────────
+    safe_cfg('sprach_anzeige_label', font=('Segoe UI', fs(24), 'bold'))
+    safe_cfg('trainer_sprach_label', font=('Segoe UI', fs(24), 'bold'))
+
+    # ── Start-Bildschirm ──────────────────────────────────────────────────
+    safe_cfg('start_input_button',  font=('Segoe UI', fs(30), 'bold'))
+    safe_cfg('start_choice_button', font=('Segoe UI', fs(30), 'bold'))
+    safe_cfg('xp_start_label',      font=('Segoe UI', fs(20), 'bold'))
+
+    # ── Statistik-Screen ─────────────────────────────────────────────────
+    safe_cfg('statistik_titel_label', font=('Arial', fs(30)))
+    safe_cfg('stat_feedback_label',   font=('Arial', fs(16)))
 
 def debounced_update_font_sizes(event=None):
     """Debounced Wrapper für update_font_sizes, nur auf App-Resize reagieren."""
@@ -286,7 +354,11 @@ alle_vokabeln       = []
 vokabeln_zu_lernen  = []
 learning_queue      = []  # Warteschlange für den aktuellen Durchlauf
 initial_queue_len   = 0   # Startlänge der Queue für Fortschrittsanzeige
-punktzahl           = 100
+xp_session          = 0   # XP in der aktuellen Übungseinheit
+xp_woche            = 0   # XP in der aktuellen Woche (reset jeden Sonntag 20:00)
+xp_gesamt           = 0   # Gesamt-XP aller Zeiten
+firebase_db         = None  # Firestore-Client (None = Offline)
+aktueller_nutzer    = None  # Benutzername
 aktuelle_vokabel    = None
 runde_status        = {}
 vokabel_statistik   = {}
@@ -329,6 +401,8 @@ aktuelle_sprache = None
 sprach_anzeige_label = None
 trainer_sprach_label = None
 end_sprach_label = None
+xp_start_label       = None  # XP-Anzeige im Startbildschirm
+rangliste_scroll_frame = None  # Scroll-Container der Rangliste
 
 # Training-Einstellungen
 training_settings = {
@@ -452,6 +526,299 @@ def statistik_bereinigen():
         if k not in gueltig:
             del vokabel_statistik[k]
     statistik_speichern()
+
+# ======================= XP-System & Firebase ================================
+
+XP_DATEI   = os.path.join(STAT_DIR, 'xp.json')
+USER_DATEI = os.path.join(STAT_DIR, 'user.json')
+CRED_DATEI = os.path.join(APP_DIR,  'firebase_credentials.json')
+
+
+def init_firebase():
+    """Initialisiert Firebase Admin SDK. Bei Fehler läuft die App im Offline-Modus weiter."""
+    global firebase_db
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+        if not os.path.exists(CRED_DATEI):
+            print("[Firebase] Keine Credentials-Datei gefunden → Offline-Modus.")
+            return
+        cred = credentials.Certificate(CRED_DATEI)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+        firebase_db = firestore.client()
+        print("[Firebase] Verbunden.")
+    except Exception as e:
+        print(f"[Firebase] Fehler: {e} → Offline-Modus.")
+        firebase_db = None
+
+
+def _lade_user_data() -> dict:
+    """Liest stats/user.json als Dict. Format: {active, users:[]}."""
+    try:
+        if os.path.exists(USER_DATEI):
+            with open(USER_DATEI, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # Altes Format {username: ...} migrieren
+            if 'username' in data and 'active' not in data:
+                name = data['username']
+                return {'active': name, 'users': [name]}
+            return data
+    except Exception:
+        pass
+    return {'active': None, 'users': []}
+
+
+def _speichere_user_data(data: dict):
+    """Schreibt stats/user.json."""
+    try:
+        if not os.path.exists(STAT_DIR):
+            os.makedirs(STAT_DIR)
+        with open(USER_DATEI, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[User] Speichern fehlgeschlagen: {e}")
+
+
+def lade_benutzernamen() -> str | None:
+    """Gibt den zuletzt aktiven Benutzernamen zurück."""
+    return _lade_user_data().get('active')
+
+
+def speichere_benutzernamen(name: str):
+    """Setzt name als aktiven Benutzer und fügt ihn der Known-Users-Liste hinzu."""
+    data = _lade_user_data()
+    data['active'] = name
+    if name not in data.get('users', []):
+        data.setdefault('users', []).append(name)
+    _speichere_user_data(data)
+
+
+def frage_benutzernamen():
+    """Zeigt Eingabe-Dialog für den Benutzernamen beim ersten Start."""
+    global aktueller_nutzer
+    name = "Anonym"
+    try:
+        dialog = ctk.CTkInputDialog(
+            text="Bitte gib deinen Benutzernamen ein.\nEr erscheint später in der Rangliste:",
+            title="Benutzername"
+        )
+        eingabe_name = dialog.get_input()
+        name = (eingabe_name or "").strip() or "Anonym"
+    except Exception as e:
+        print(f"[User] Dialog fehlgeschlagen: {e}")
+    aktueller_nutzer = name
+    speichere_benutzernamen(name)
+    # XP-Eintrag für diesen Nutzer anlegen falls noch nicht vorhanden
+    _init_xp_fuer_nutzer(name)
+
+
+def _xp_current_week() -> str:
+    """Gibt die aktuelle ISO-Jahr-Woche zurück, z. B. '2026-09'."""
+    iso = datetime.now().isocalendar()
+    return f"{iso[0]}-{iso[1]:02d}"
+
+
+def _lade_alle_xp() -> dict:
+    """Liest xp.json als Multi-User-Dict. Format: {username: {week_xp, total_xp, last_reset}}."""
+    try:
+        if os.path.exists(XP_DATEI):
+            with open(XP_DATEI, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # Altes Einzelnutzer-Format migrieren
+            if 'username' in data and isinstance(data.get('week_xp'), int):
+                name = data.get('username', 'Anonym')
+                return {name: {
+                    'week_xp':    data.get('week_xp', 0),
+                    'total_xp':   data.get('total_xp', 0),
+                    'last_reset': data.get('last_reset', ''),
+                }}
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _speichere_alle_xp(alle: dict):
+    """Schreibt Multi-User-Dict in xp.json."""
+    try:
+        if not os.path.exists(STAT_DIR):
+            os.makedirs(STAT_DIR)
+        with open(XP_DATEI, 'w', encoding='utf-8') as f:
+            json.dump(alle, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[XP] Speichern fehlgeschlagen: {e}")
+
+
+def _init_xp_fuer_nutzer(name: str):
+    """Legt einen leeren XP-Eintrag für name an, falls noch nicht vorhanden."""
+    alle = _lade_alle_xp()
+    if name not in alle:
+        alle[name] = {'week_xp': 0, 'total_xp': 0, 'last_reset': _xp_current_week()}
+        _speichere_alle_xp(alle)
+
+
+def pruefe_weekly_reset():
+    """Setzt week_xp des aktiven Nutzers zurück, wenn die Woche gewechselt hat."""
+    global xp_woche
+    if not aktueller_nutzer:
+        return
+    current_week = _xp_current_week()
+    try:
+        alle = _lade_alle_xp()
+        eintrag = alle.get(aktueller_nutzer, {})
+        if eintrag.get('last_reset', '') != current_week:
+            xp_woche = 0
+            speichere_xp()
+    except Exception as e:
+        print(f"[XP] Weekly-Reset-Prüfung fehlgeschlagen: {e}")
+
+
+def lade_xp():
+    """Lädt XP des aktiven Nutzers; synchronisiert mit Firebase (nimmt höheren Wert)."""
+    global xp_woche, xp_gesamt
+    if not aktueller_nutzer:
+        xp_woche = xp_gesamt = 0
+        return
+    current_week = _xp_current_week()
+    # Lokal lesen
+    try:
+        alle = _lade_alle_xp()
+        eintrag = alle.get(aktueller_nutzer, {})
+        if eintrag.get('last_reset', '') == current_week:
+            xp_woche = eintrag.get('week_xp', 0)
+        else:
+            xp_woche = 0
+        xp_gesamt = eintrag.get('total_xp', 0)
+    except Exception:
+        xp_woche = 0
+        xp_gesamt = 0
+    # Firebase synchronisieren (höheren Wert nehmen)
+    if firebase_db and aktueller_nutzer:
+        try:
+            doc = firebase_db.collection('users').document(aktueller_nutzer).get()
+            if doc.exists:
+                fb = doc.to_dict()
+                if fb.get('last_reset', '') == current_week:
+                    xp_woche = max(xp_woche, fb.get('week_xp', 0))
+                xp_gesamt = max(xp_gesamt, fb.get('total_xp', 0))
+        except Exception as e:
+            print(f"[Firebase] Sync fehlgeschlagen: {e}")
+
+
+def speichere_xp():
+    """Speichert XP des aktiven Nutzers lokal (Multi-User) und asynchron in Firebase."""
+    if not aktueller_nutzer:
+        return
+    current_week = _xp_current_week()
+    # Lokal: nur den eigenen Eintrag aktualisieren, andere unberührt lassen
+    try:
+        alle = _lade_alle_xp()
+        alle[aktueller_nutzer] = {
+            'week_xp':    xp_woche,
+            'total_xp':   xp_gesamt,
+            'last_reset': current_week,
+        }
+        _speichere_alle_xp(alle)
+    except Exception as e:
+        print(f"[XP] Lokales Speichern fehlgeschlagen: {e}")
+    # Firebase in Hintergrund-Thread (blockiert UI nicht)
+    if firebase_db and aktueller_nutzer:
+        def _save():
+            try:
+                firebase_db.collection('users').document(aktueller_nutzer).set({
+                    'week_xp':    xp_woche,
+                    'total_xp':   xp_gesamt,
+                    'last_reset': current_week,
+                    'updated_at': datetime.now().isoformat(),
+                })
+            except Exception as e:
+                print(f"[Firebase] Speichern fehlgeschlagen: {e}")
+        threading.Thread(target=_save, daemon=True).start()
+
+
+def benutzer_wechseln():
+    """Zeigt Dialog zum Wechseln oder Anlegen eines Benutzers."""
+    global aktueller_nutzer, xp_woche, xp_gesamt, xp_session
+
+    data = _lade_user_data()
+    bekannte_nutzer = data.get('users', [])
+
+    # Dialog-Fenster
+    win = ctk.CTkToplevel(app)
+    win.title("Benutzer wechseln")
+    win.geometry("420x500")
+    win.grab_set()
+    win.focus_set()
+
+    ctk.CTkLabel(win, text="Benutzer wechseln", font=('Segoe UI', 22, 'bold')).pack(pady=(24, 8))
+    ctk.CTkLabel(win, text="Wähle einen Benutzer oder erstelle einen neuen:",
+                 font=('Segoe UI', 13), text_color=LIGHT_TEXT).pack(pady=(0, 16))
+
+    scroll = ctk.CTkScrollableFrame(win, height=200)
+    scroll.pack(fill='x', padx=24)
+
+    def _waehle(name):
+        global aktueller_nutzer, xp_woche, xp_gesamt, xp_session
+        aktueller_nutzer = name
+        speichere_benutzernamen(name)
+        xp_session = 0
+        pruefe_weekly_reset()
+        lade_xp()
+        update_xp_label()
+        win.destroy()
+        # Startbildschirm neu aufbauen damit Nutzername aktuell ist
+        startbildschirm()
+
+    for nutzer in bekannte_nutzer:
+        row = ctk.CTkFrame(scroll, fg_color="transparent")
+        row.pack(fill='x', pady=3)
+        aktiv_marker = "  ✓" if nutzer == aktueller_nutzer else ""
+        farbe = SPRACH_COLOR if nutzer == aktueller_nutzer else BTN_COLOR
+        ctk.CTkButton(
+            row, text=f"{nutzer}{aktiv_marker}",
+            fg_color=farbe, hover_color=BTN_HOVER_COLOR,
+            height=44, corner_radius=12, font=('Segoe UI', 15),
+            command=lambda n=nutzer: _waehle(n)
+        ).pack(fill='x')
+
+    ctk.CTkLabel(win, text="Neuer Benutzer:", font=('Segoe UI', 14, 'bold')).pack(pady=(20, 6))
+    neu_entry = ctk.CTkEntry(win, placeholder_text="Name eingeben...", height=40, font=('Segoe UI', 14))
+    neu_entry.pack(fill='x', padx=24)
+
+    def _neu_erstellen():
+        name = neu_entry.get().strip()
+        if not name:
+            return
+        _init_xp_fuer_nutzer(name)
+        _waehle(name)
+
+    ctk.CTkButton(
+        win, text="Erstellen & wechseln",
+        fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR,
+        height=44, corner_radius=12, font=('Segoe UI', 15),
+        command=_neu_erstellen
+    ).pack(fill='x', padx=24, pady=(10, 8))
+
+    ctk.CTkButton(
+        win, text="Abbrechen",
+        fg_color="transparent", hover_color="#f3f4f6",
+        height=36, corner_radius=12, font=('Segoe UI', 13),
+        border_width=1, border_color=DISABLED_COLOR,
+        command=win.destroy
+    ).pack(fill='x', padx=24, pady=(0, 16))
+
+
+def update_xp_label():
+    """Aktualisiert den XP-Label im Startbildschirm."""
+    lbl = globals().get('xp_start_label')
+    if lbl:
+        try:
+            if lbl.winfo_exists():
+                lbl.configure(text=f"⭐  XP diese Woche:  {xp_woche}")
+        except Exception:
+            pass
+
 
 def lade_vokabeln():
     global alle_vokabeln, vokabeln_zu_lernen
@@ -1107,37 +1474,72 @@ def startbildschirm():
         text_color=SPRACH_COLOR
     )
     setattr(sprach_anzeige_label, '_is_sprach_label', True)
-    sprach_anzeige_label.pack(pady=(0, 18))
+    sprach_anzeige_label.pack(pady=(0, 6))
 
-    # Drei kleinere Buttons in einer horizontalen Reihe
+    # Nutzer-Zeile: Name + Wechseln-Button
+    nutzer_row = ctk.CTkFrame(content, fg_color="transparent")
+    nutzer_row.pack(pady=(0, 4))
+    ctk.CTkLabel(
+        nutzer_row,
+        text=f"👤  {aktueller_nutzer or 'Kein Benutzer'}",
+        font=('Segoe UI', 15),
+        text_color=LIGHT_TEXT
+    ).pack(side='left', padx=(0, 10))
+    ctk.CTkButton(
+        nutzer_row, text="Wechseln",
+        width=90, height=28, corner_radius=10,
+        fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR,
+        font=('Segoe UI', 12),
+        command=benutzer_wechseln
+    ).pack(side='left')
+
+    # XP-Anzeige
+    global xp_start_label
+    xp_start_label = ctk.CTkLabel(
+        content,
+        text=f"⭐  XP diese Woche:  {xp_woche}",
+        font=('Segoe UI', 20, 'bold'),
+        text_color="#f59e0b"
+    )
+    xp_start_label.pack(pady=(0, 18))
+
+    # Vier kleinere Buttons in einer horizontalen Reihe
     actions_row = ctk.CTkFrame(content, fg_color="transparent")
     actions_row.pack(pady=6)
-    for i in range(3):
+    for i in range(4):
         actions_row.grid_columnconfigure(i, weight=1, uniform="actions")
 
     btn_stats = ctk.CTkButton(
         actions_row, text="Statistiken", fg_color=BTN_COLOR,
-        hover_color=BTN_HOVER_COLOR, width=220, height=60, corner_radius=20,
+        hover_color=BTN_HOVER_COLOR, width=200, height=60, corner_radius=20,
         font=('Segoe UI', 18, 'bold'),
         command=lambda: [zeige_frame('statistik'), zeige_statistik()]
     )
-    btn_stats.grid(row=0, column=0, padx=10, pady=6)
+    btn_stats.grid(row=0, column=0, padx=8, pady=6)
 
     btn_edit = ctk.CTkButton(
         actions_row, text="Vokabeln bearbeiten", fg_color=BTN_COLOR,
-        hover_color=BTN_HOVER_COLOR, width=220, height=60, corner_radius=20,
+        hover_color=BTN_HOVER_COLOR, width=200, height=60, corner_radius=20,
         font=('Segoe UI', 18, 'bold'),
         command=show_editor
     )
-    btn_edit.grid(row=0, column=1, padx=10, pady=6)
+    btn_edit.grid(row=0, column=1, padx=8, pady=6)
 
     btn_settings = ctk.CTkButton(
         actions_row, text="Einstellungen", fg_color=BTN_COLOR,
-        hover_color=BTN_HOVER_COLOR, width=220, height=60, corner_radius=20,
+        hover_color=BTN_HOVER_COLOR, width=200, height=60, corner_radius=20,
         font=('Segoe UI', 18, 'bold'),
         command=lambda: zeige_frame('einstellungen')
     )
-    btn_settings.grid(row=0, column=2, padx=10, pady=6)
+    btn_settings.grid(row=0, column=2, padx=8, pady=6)
+
+    btn_ranking = ctk.CTkButton(
+        actions_row, text="🏆  Rangliste", fg_color="#7c3aed",
+        hover_color="#5b21b6", width=200, height=60, corner_radius=20,
+        font=('Segoe UI', 18, 'bold'),
+        command=lambda: [rangliste_laden(), zeige_frame('rangliste')]
+    )
+    btn_ranking.grid(row=0, column=3, padx=8, pady=6)
 
     # Bottom-Bar (Row 3): links Dark/Light, rechts Sprache wechseln
     bottom_bar = ctk.CTkFrame(outer, fg_color="transparent")
@@ -1168,6 +1570,183 @@ def startbildschirm():
         update_start_choice_access()
     except Exception:
         pass
+
+# ========================== Rangliste-Screen =================================
+
+def rangliste_screen():
+    """Ranglisten-Screen: Zeigt alle Spieler sortiert nach Wochen-XP."""
+    frame = ctk.CTkFrame(app)
+    frames['rangliste'] = frame
+
+    # Header-Leiste
+    header = ctk.CTkFrame(frame, height=64, fg_color="#7c3aed", corner_radius=0)
+    header.pack(fill='x')
+    header.pack_propagate(False)
+    header_inner = ctk.CTkFrame(header, fg_color="transparent")
+    header_inner.pack(expand=True, fill='both', padx=16)
+    ctk.CTkButton(
+        header_inner, text="←", width=44, height=44, corner_radius=22,
+        fg_color="transparent", hover_color="#5b21b6", font=('Segoe UI', 22, 'bold'),
+        command=lambda: zeige_frame('start')
+    ).pack(side='left', pady=10)
+    ctk.CTkLabel(
+        header_inner, text="🏆  Rangliste",
+        font=('Segoe UI', 24, 'bold'), text_color="white"
+    ).pack(side='left', padx=16, pady=10)
+
+    # Wochen-Hinweis
+    ctk.CTkLabel(
+        frame,
+        text="Wöchentliches Ranking  •  Reset jeden Sonntag um 20:00 Uhr",
+        font=('Segoe UI', 13), text_color=LIGHT_TEXT
+    ).pack(pady=(12, 4))
+
+    # Scrollbarer Listenbereich
+    global rangliste_scroll_frame
+    rangliste_scroll_frame = ctk.CTkScrollableFrame(frame, corner_radius=12)
+    rangliste_scroll_frame.pack(expand=True, fill='both', padx=40, pady=(4, 20))
+
+    # Platzhalter-Text (wird beim Laden ersetzt)
+    ctk.CTkLabel(
+        rangliste_scroll_frame,
+        text="Lade Rangliste...",
+        font=('Segoe UI', 18), text_color=LIGHT_TEXT
+    ).pack(pady=40)
+
+
+def rangliste_laden():
+    """Lädt Spielerdaten aus Firestore und füllt den Ranglisten-Screen."""
+    scroll = globals().get('rangliste_scroll_frame')
+    if scroll is None:
+        return
+
+    # Bestehende Einträge löschen
+    for widget in scroll.winfo_children():
+        try:
+            widget.destroy()
+        except Exception:
+            pass
+
+    # Daten laden
+    spieler = []
+
+    # Eigene Daten immer einbeziehen (auch offline)
+    if aktueller_nutzer:
+        spieler.append({
+            'username': aktueller_nutzer,
+            'week_xp':  xp_woche,
+            'total_xp': xp_gesamt,
+            'is_self':  True,
+        })
+
+    if firebase_db:
+        def _fetch():
+            try:
+                docs = firebase_db.collection('users').stream()
+                remote = []
+                for doc in docs:
+                    d = doc.to_dict()
+                    name = doc.id
+                    # Eigenen Eintrag aus Firebase nehmen (aktuellster Stand)
+                    if name == aktueller_nutzer:
+                        for s in spieler:
+                            if s['username'] == aktueller_nutzer:
+                                s['week_xp']  = max(s['week_xp'],  d.get('week_xp', 0))
+                                s['total_xp'] = max(s['total_xp'], d.get('total_xp', 0))
+                    else:
+                        remote.append({
+                            'username': name,
+                            'week_xp':  d.get('week_xp', 0),
+                            'total_xp': d.get('total_xp', 0),
+                            'is_self':  False,
+                        })
+                spieler.extend(remote)
+            except Exception as e:
+                print(f"[Rangliste] Ladefehler: {e}")
+            finally:
+                # UI-Update im Hauptthread
+                if app:
+                    app.after(0, lambda: _render_rangliste(spieler))
+        threading.Thread(target=_fetch, daemon=True).start()
+
+        # Sofort Ladeanzeige rendern während Firebase lädt
+        ctk.CTkLabel(
+            scroll,
+            text="Verbinde mit Firebase...",
+            font=('Segoe UI', 16), text_color=LIGHT_TEXT
+        ).pack(pady=40)
+    else:
+        # Offline: nur eigene Daten
+        _render_rangliste(spieler)
+
+
+def _render_rangliste(spieler: list):
+    """Rendert die Ranglisten-Einträge in den scroll_frame."""
+    scroll = globals().get('rangliste_scroll_frame')
+    if scroll is None:
+        return
+
+    # Alte Widgets entfernen
+    for widget in scroll.winfo_children():
+        try:
+            widget.destroy()
+        except Exception:
+            pass
+
+    # Sortieren nach week_xp (absteigende Reihenfolge), Gleichstand → gesamt-XP
+    sorted_spieler = sorted(spieler, key=lambda x: (x['week_xp'], x['total_xp']), reverse=True)
+
+    MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+    MEDAL_COLORS = {1: "#f59e0b", 2: "#9ca3af", 3: "#b45309"}
+    ROW_BG_SELF   = "#1e1b4b"   # Hervorhebung eigene Zeile
+    ROW_BG_NORMAL = "transparent"
+
+    if not sorted_spieler:
+        ctk.CTkLabel(
+            scroll, text="Noch keine Spieler vorhanden.",
+            font=('Segoe UI', 16), text_color=LIGHT_TEXT
+        ).pack(pady=40)
+        return
+
+    for platz, s in enumerate(sorted_spieler, start=1):
+        is_self  = s.get('is_self', False)
+        row_bg   = ROW_BG_SELF if is_self else ROW_BG_NORMAL
+
+        row = ctk.CTkFrame(scroll, corner_radius=14, fg_color=row_bg)
+        row.pack(fill='x', padx=8, pady=5)
+        row.grid_columnconfigure(1, weight=1)
+
+        # Platz-Symbol
+        if platz in MEDALS:
+            platz_text  = MEDALS[platz]
+            platz_color = MEDAL_COLORS[platz]
+            platz_font  = ('Segoe UI', 28)
+        else:
+            platz_text  = f"{platz}."
+            platz_color = LIGHT_TEXT
+            platz_font  = ('Segoe UI', 20, 'bold')
+
+        ctk.CTkLabel(
+            row, text=platz_text, font=platz_font,
+            text_color=platz_color, width=52
+        ).grid(row=0, column=0, padx=(16, 8), pady=14, sticky='w')
+
+        # Name ("Du" wenn eigene Zeile)
+        name_display = f"{s['username']}  👉 Du" if is_self else s['username']
+        name_color   = "#a78bfa" if is_self else None
+        name_font    = ('Segoe UI', 18, 'bold') if is_self else ('Segoe UI', 17)
+        ctk.CTkLabel(
+            row, text=name_display, font=name_font,
+            text_color=name_color or ("", "white")
+        ).grid(row=0, column=1, padx=8, pady=14, sticky='w')
+
+        # XP rechts
+        xp_text = f"⭐ {s['week_xp']} XP"
+        ctk.CTkLabel(
+            row, text=xp_text,
+            font=('Segoe UI', 17, 'bold'), text_color="#f59e0b"
+        ).grid(row=0, column=2, padx=(8, 20), pady=14, sticky='e')
+
 
 def einstellungen_screen():
     """Einstellungsseite mit Schiebereglern für Training-Parameter"""
@@ -1267,7 +1846,7 @@ def einstellungen_screen():
         # Training starten
         reset_for_new_attempt()
         try:
-            punktzahl_label.configure(text=f"Punktzahl: {punktzahl}")
+            punktzahl_label.configure(text=f"⭐ Session: +{xp_session} XP")
         except Exception:
             pass
         naechste_vokabel()
@@ -1504,8 +2083,8 @@ def trainer():
     feedback_label = ctk.CTkLabel(content, text="", font=('Arial', 22))
     feedback_label.grid(row=4, column=0, pady=20, sticky='n')
 
-    # Punktzahl (row 5)
-    punktzahl_label = ctk.CTkLabel(content, text=f"Punktzahl: {punktzahl}", font=('Arial', 22))
+    # XP Session-Anzeige (row 5)
+    punktzahl_label = ctk.CTkLabel(content, text=f"⭐ Session: +{xp_session} XP", font=('Arial', 22))
     punktzahl_label.grid(row=5, column=0, pady=20, sticky='n')
 
     # Progress unten (row 6)
@@ -2085,7 +2664,7 @@ def naechste_vokabel():
             pass
 
 def pruefe_antwort(event=None, user_answer=None):
-    global punktzahl, feedback_active
+    global xp_session, xp_woche, xp_gesamt, feedback_active
 
     # Falls schon Feedback aktiv ist, nicht nochmal prüfen
     if feedback_active:
@@ -2115,10 +2694,12 @@ def pruefe_antwort(event=None, user_answer=None):
     if training_settings.get('mode', 'input') == 'choice':
         set_choice_buttons_state('disabled')
 
+    xp_gewinn = 0
     if ant.lower() == kor.lower():
         feedback_label.configure(text=f"{EMOJI_OK}Richtig!", text_color=SUCCESS_COLOR)
         vokabel_statistik[key]['richtig'] += 1
         vokabel_repetitions[key] = vokabel_repetitions.get(key, 0) + 1
+        xp_gewinn = 10
     else:
         if training_settings.get('mode', 'input') == 'input' and is_typo(ant, kor):
             feedback_label.configure(
@@ -2127,18 +2708,23 @@ def pruefe_antwort(event=None, user_answer=None):
             )
             vokabel_statistik[key]['richtig'] += 1
             vokabel_repetitions[key] = vokabel_repetitions.get(key, 0) + 1
-            punktzahl = max(0, punktzahl - 1)
+            xp_gewinn = 5
         else:
             feedback_label.configure(
                 text=f"{EMOJI_BAD}Falsch! Richtig: {kor}",
                 text_color=ERROR_COLOR
             )
-            punktzahl = max(0, punktzahl - 5)
             vokabel_statistik[key]['falsch'] += 1
             # Bei Fehler: Vokabel wieder hinten anstellen
             learning_queue.append(aktuelle_vokabel)
 
-    punktzahl_label.configure(text=f"Punktzahl: {punktzahl}")
+    xp_session += xp_gewinn
+    xp_woche   += xp_gewinn
+    xp_gesamt  += xp_gewinn
+    if xp_gewinn > 0:
+        speichere_xp()
+        update_xp_label()
+    punktzahl_label.configure(text=f"⭐ Session: +{xp_session} XP")
     statistik_speichern()
     update_fortschritt()
 
@@ -2403,8 +2989,8 @@ def zeige_frame(name: str):
 # ====================== Reset- & Neustart-Funktionen ========================
 
 def reset_for_new_attempt():
-    global punktzahl, vokabeln_zu_lernen, runde_status, vokabel_repetitions, learning_queue, initial_queue_len
-    punktzahl = 100
+    global xp_session, vokabeln_zu_lernen, runde_status, vokabel_repetitions, learning_queue, initial_queue_len
+    xp_session = 0
     vokabeln_zu_lernen = alle_vokabeln.copy()
     random.shuffle(vokabeln_zu_lernen)
     runde_status.clear()
@@ -2439,7 +3025,7 @@ def starte_neu():
     zeige_frame('trainer')
     try:
         if punktzahl_label:
-            punktzahl_label.configure(text=f"Punktzahl: {punktzahl}")
+            punktzahl_label.configure(text=f"⭐ Session: +{xp_session} XP")
     except Exception:
         pass
     naechste_vokabel()
@@ -2460,8 +3046,9 @@ def endbildschirm():
         lbl_lang = ctk.CTkLabel(center, text=aktuelle_sprache.capitalize(), font=('Segoe UI', 24, 'bold'), text_color=SPRACH_COLOR)
         lbl_lang.pack(pady=(0, 16))
 
-    score_lbl = ctk.CTkLabel(center, text=f"Deine Punktzahl: {punktzahl}", font=('Arial', 26))
-    score_lbl.pack(pady=16)
+    score_lbl = ctk.CTkLabel(center, text=f"⭐  +{xp_session} XP diese Session", font=('Arial', 26))
+    score_lbl.pack(pady=8)
+    ctk.CTkLabel(center, text=f"XP diese Woche gesamt: {xp_woche}", font=('Arial', 18), text_color=LIGHT_TEXT).pack(pady=8)
 
     btn_wrap = ctk.CTkFrame(center, fg_color="transparent")
     btn_wrap.pack(fill='x', padx=40, pady=20)
@@ -2521,12 +3108,36 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # Benutzername laden / erfragen
+    try:
+        name = lade_benutzernamen()
+        if name:
+            aktueller_nutzer = name
+        else:
+            frage_benutzernamen()
+    except Exception as e:
+        print(f"[User] Fehler: {e}")
+
+    # Firebase initialisieren
+    try:
+        init_firebase()
+    except Exception as e:
+        print(f"[Firebase] Init-Fehler: {e}")
+
+    # XP laden & wöchentlichen Reset prüfen
+    try:
+        pruefe_weekly_reset()
+        lade_xp()
+    except Exception as e:
+        print(f"[XP] Ladefehler: {e}")
+
     # Screens vorbereiten
     try:
         trainer()
         statistik()
         editor()
         einstellungen_screen()
+        rangliste_screen()
     except Exception as _e:
         pass
 

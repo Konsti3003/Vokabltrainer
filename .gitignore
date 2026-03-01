@@ -1,1 +1,4 @@
 .env
+firebase_credentials.json
+stats/xp.json
+stats/user.json
