@@ -1,81 +1,21 @@
 {
-    "Freundschaft|friendship": {
-        "richtig": 5,
-        "falsch": 1
-    },
-    "Sicherheit|safety": {
-        "richtig": 6,
-        "falsch": 3
-    },
-    "Bitte|request": {
-        "richtig": 1,
-        "falsch": 0
-    },
-    "Wunsch|request": {
-        "richtig": 5,
-        "falsch": 2
-    },
-    "schockieren|shock": {
-        "richtig": 3,
-        "falsch": 1
-    },
-    "geheim|secret": {
-        "richtig": 5,
-        "falsch": 3
-    },
-    "mit jm. gehen|date": {
-        "richtig": 1,
-        "falsch": 2
-    },
-    "schließen|break up": {
-        "richtig": 2,
-        "falsch": 0
-    },
-    "trennen|break up": {
-        "richtig": 1,
-        "falsch": 1
-    },
-    "verärgert sein|annoyed": {
-        "richtig": 6,
-        "falsch": 2
-    },
-    "verwirrt|confused": {
-        "richtig": 2,
-        "falsch": 0
-    },
-    "böse|cross": {
-        "richtig": 2,
-        "falsch": 0
-    },
-    "verängstigt|frightened": {
-        "richtig": 1,
-        "falsch": 0
-    },
-    "hoffnungsvoll|hopeful": {
-        "richtig": 5,
-        "falsch": 1
-    },
-    "optimistisch|optimistic": {
-        "richtig": 1,
-        "falsch": 0
-    },
-    "froh|pleased": {
-        "richtig": 1,
-        "falsch": 0
-    },
     "untröstlich|heartbroken": {
-        "richtig": 1,
+        "richtig": 4,
         "falsch": 0
     },
     "ängstlich|terrified": {
-        "richtig": 6,
+        "richtig": 12,
         "falsch": 2
     },
     "aufgeregt|thrilled": {
-        "richtig": 5,
+        "richtig": 9,
         "falsch": 1
     },
-    "verliebt sein|to fall in love with sb.": {
+    "blau|blue": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "grün|green": {
         "richtig": 1,
         "falsch": 0
     }

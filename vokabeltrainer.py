@@ -18,8 +18,13 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageEnhance
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import time
+import hashlib
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 # --- Vorab-Definitionen zur Vermeidung statischer NameError-Warnungen ---
@@ -48,19 +53,11 @@ app: ctk.CTk | None = None
 haus_icon  = None
 birne_icon = None
 tipp_icon  = None
-flagge_icon = None
-global _resize_job
+_resize_job = None
 
 # Frames-Registry
 frames = {}
 current_visible_frame = None
-
-# Vorwärtsdeklarationen (werden später überschrieben)
-def zeige_frame(name: str):
-    pass
-
-def endbildschirm():
-    pass
 
 def update_fenstertitel():
     try:
@@ -76,13 +73,7 @@ def update_fenstertitel():
 def update_sprachanzeige():
     text = aktuelle_sprache.capitalize() if aktuelle_sprache else "Keine Sprache"
 
-    labels = [
-        globals().get('sprach_anzeige_label'),
-        globals().get('trainer_sprach_label'),
-        globals().get('end_sprach_label')
-    ]
-
-    for lbl in labels:
+    for lbl in (sprach_anzeige_label, trainer_sprach_label, end_sprach_label):
         try:
             if lbl is not None and lbl.winfo_exists():
                 lbl.configure(text=text)
@@ -90,12 +81,11 @@ def update_sprachanzeige():
             pass
 
     try:
-        stat_title = globals().get('statistik_titel_label')
-        if stat_title is not None and stat_title.winfo_exists():
+        if statistik_titel_label is not None and statistik_titel_label.winfo_exists():
             if aktuelle_sprache:
-                stat_title.configure(text=f"Statistiken - {aktuelle_sprache.capitalize()}")
+                statistik_titel_label.configure(text=f"Statistiken - {aktuelle_sprache.capitalize()}")
             else:
-                stat_title.configure(text="Statistiken")
+                statistik_titel_label.configure(text="Statistiken")
     except Exception:
         pass
 
@@ -185,13 +175,6 @@ def debounced_update_font_sizes(event=None):
         pass
     if app:
         _resize_job = app.after(80, update_font_sizes)
-
-def reset_for_new_attempt():
-    pass
-
-def starte_neu():
-    pass
-# --- Ende Vorab-Definitionen ---
 
 # Tippfehler-Erkennung mit Tastatur-Layout
 def get_keyboard_distance(char1, char2):
@@ -315,9 +298,9 @@ OCR_DIR   = os.path.join(APP_DIR, 'ocr')
 VOCAB_DIR = os.path.join(APP_DIR, 'vocabularies')
 STAT_DIR  = os.path.join(APP_DIR, 'stats')
 
-# ======================= Pfade zu CSV und JSON ==============================
-CSV_DATEI       = os.path.join(VOCAB_DIR, 'vokabeln.csv')
-STATISTIK_DATEI = os.path.join(STAT_DIR, 'statistik.json')
+# Verzeichnisse einmalig sicherstellen
+os.makedirs(VOCAB_DIR, exist_ok=True)
+os.makedirs(STAT_DIR, exist_ok=True)
 
 # ======================= OpenAI API Key =======================================
 load_dotenv(override=True)  # <--- FORCE Reload from file (ignores old memory)
@@ -357,6 +340,7 @@ initial_queue_len   = 0   # Startlänge der Queue für Fortschrittsanzeige
 xp_session          = 0   # XP in der aktuellen Übungseinheit
 xp_woche            = 0   # XP in der aktuellen Woche (reset jeden Sonntag 20:00)
 xp_gesamt           = 0   # Gesamt-XP aller Zeiten
+combo_streak        = 0   # Anzahl aufeinanderfolgender richtiger Antworten (nur Eingabe-Modus)
 firebase_db         = None  # Firestore-Client (None = Offline)
 aktueller_nutzer    = None  # Benutzername
 aktuelle_vokabel    = None
@@ -371,7 +355,6 @@ eingabe             = None
 feedback_label      = None
 punktzahl_label     = None
 fortschritt         = None
-feedback_area       = None
 btn_pruefen         = None
 start_button        = None
 start_choice_button = None
@@ -457,14 +440,16 @@ configure_tesseract_path()
 
 # ======================= Sprach- und Statistik-Funktionen ====================
 def get_csv_datei():
+    if aktuelle_sprache is None:
+        raise ValueError("Keine Sprache ausgewählt (aktuelle_sprache ist None)")
     return os.path.join(VOCAB_DIR, f'vokabeln_{aktuelle_sprache}.csv')
 
 def get_statistik_datei():
+    if aktuelle_sprache is None:
+        raise ValueError("Keine Sprache ausgewählt (aktuelle_sprache ist None)")
     return os.path.join(STAT_DIR, f'statistik_{aktuelle_sprache}.json')
 
 def vorhandene_sprachen():
-    if not os.path.exists(VOCAB_DIR):
-        os.makedirs(VOCAB_DIR)
     files = [f for f in os.listdir(VOCAB_DIR) if f.startswith("vokabeln_") and f.endswith(".csv")]
     return [f[len("vokabeln_"):-len(".csv")] for f in files]
 
@@ -473,8 +458,6 @@ def initialisiere_sprache(sprache):
     aktuelle_sprache = sprache.lower()
 
     # CSV-Datei anlegen falls nicht vorhanden:
-    if not os.path.exists(VOCAB_DIR):
-        os.makedirs(VOCAB_DIR)
     csv_path = get_csv_datei()
     if not os.path.exists(csv_path):
         with open(csv_path, 'w', encoding='utf-8', newline='') as f:
@@ -482,8 +465,6 @@ def initialisiere_sprache(sprache):
             writer.writeheader()
 
     # Statistik-Datei anlegen falls nicht vorhanden:
-    if not os.path.exists(STAT_DIR):
-        os.makedirs(STAT_DIR)
     stat_path = get_statistik_datei()
     if not os.path.exists(stat_path):
         with open(stat_path, 'w', encoding='utf-8') as f:
@@ -506,12 +487,10 @@ def initialisiere_sprache(sprache):
 
 # ========================= Datei-I/O & Statistik =============================
 def statistik_laden():
-    if not os.path.exists(STAT_DIR):
-        os.makedirs(STAT_DIR)
-    if not os.path.exists(get_statistik_datei()):
-        with open(STATISTIK_DATEI, 'w', encoding='utf-8') as f:
-            json.dump({}, f)
-    with open(get_statistik_datei(), 'r', encoding='utf-8') as f:
+    stat_datei = get_statistik_datei()
+    if not os.path.exists(stat_datei):
+        return {}
+    with open(stat_datei, 'r', encoding='utf-8') as f:
         data = json.load(f)
     return {tuple(k.split('|')): v for k, v in data.items()}
 
@@ -530,6 +509,7 @@ def statistik_bereinigen():
 # ======================= XP-System & Firebase ================================
 
 XP_DATEI   = os.path.join(STAT_DIR, 'xp.json')
+_xp_lock   = threading.RLock()
 USER_DATEI = os.path.join(STAT_DIR, 'user.json')
 CRED_DATEI = os.path.join(APP_DIR,  'firebase_credentials.json')
 
@@ -572,8 +552,6 @@ def _lade_user_data() -> dict:
 def _speichere_user_data(data: dict):
     """Schreibt stats/user.json."""
     try:
-        if not os.path.exists(STAT_DIR):
-            os.makedirs(STAT_DIR)
         with open(USER_DATEI, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -594,6 +572,271 @@ def speichere_benutzernamen(name: str):
     _speichere_user_data(data)
 
 
+# ── PIN-System ─────────────────────────────────────────────────────────────
+
+def _hash_pin(pin: str) -> str:
+    """Gibt SHA-256-Hash des PINs zurück."""
+    return hashlib.sha256(pin.encode('utf-8')).hexdigest()
+
+
+def _hat_pin(name: str) -> bool | None:
+    """Prüft in Firebase, ob der Nutzer einen PIN gesetzt hat.
+    Gibt True/False zurück, oder None wenn Firebase nicht erreichbar ist."""
+    if not firebase_db:
+        return None
+    try:
+        doc = firebase_db.collection('users').document(name).get()
+        if doc.exists:
+            return bool(doc.to_dict().get('pin_hash'))
+        return False
+    except Exception as e:
+        print(f"[PIN] Prüfung fehlgeschlagen: {e}")
+        return None
+
+
+def _verify_pin(name: str, pin: str) -> bool | None:
+    """Prüft, ob der PIN korrekt ist. Gibt True/False oder None (Firebase-Fehler) zurück."""
+    if not firebase_db:
+        return None
+    try:
+        doc = firebase_db.collection('users').document(name).get()
+        if doc.exists:
+            gespeicherter_hash = doc.to_dict().get('pin_hash', '')
+            return gespeicherter_hash == _hash_pin(pin)
+        return False
+    except Exception as e:
+        print(f"[PIN] Verifizierung fehlgeschlagen: {e}")
+        return None
+
+
+def _set_pin_firebase(name: str, pin: str) -> bool:
+    """Speichert den PIN-Hash in Firebase. Gibt True bei Erfolg zurück."""
+    if not firebase_db:
+        return False
+    try:
+        firebase_db.collection('users').document(name).set(
+            {'pin_hash': _hash_pin(pin)}, merge=True
+        )
+        return True
+    except Exception as e:
+        print(f"[PIN] Speichern fehlgeschlagen: {e}")
+        return False
+
+
+def pin_erstellen_dialog(name: str, callback, closable=False):
+    """Zeigt Dialog zum Erstellen eines 4-stelligen PINs.
+    callback() wird nach erfolgreichem Setzen aufgerufen.
+    Wenn closable=False, kann der Dialog nicht geschlossen werden."""
+    win = ctk.CTkToplevel(app)
+    win.title("PIN festlegen")
+    win.geometry("400x380")
+    win.resizable(False, False)
+
+    if not closable:
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    # ── Titel ──────────────────────────────────────────────────────────────
+    ctk.CTkLabel(
+        win, text="🔒 PIN festlegen",
+        font=('Segoe UI', 22, 'bold')
+    ).pack(pady=(28, 6))
+    ctk.CTkLabel(
+        win,
+        text=f"Lege einen 4-stelligen PIN für\n\"{name}\" fest.\nDer PIN kann nicht zurückgesetzt werden!",
+        font=('Segoe UI', 12), text_color=LIGHT_TEXT, justify='center'
+    ).pack(pady=(0, 14))
+
+    # ── Eingabefelder ─────────────────────────────────────────────────────
+    fields_frame = ctk.CTkFrame(win, fg_color="transparent")
+    fields_frame.pack(fill='x', padx=28)
+
+    pin_entry1 = ctk.CTkEntry(
+        fields_frame, placeholder_text="PIN eingeben (4 Ziffern)",
+        height=42, font=('Segoe UI', 15), corner_radius=10,
+        show="●"
+    )
+    pin_entry1.pack(fill='x', pady=(0, 8))
+
+    pin_entry2 = ctk.CTkEntry(
+        fields_frame, placeholder_text="PIN bestätigen",
+        height=42, font=('Segoe UI', 15), corner_radius=10,
+        show="●"
+    )
+    pin_entry2.pack(fill='x')
+
+    # Eingabe auf Ziffern + max 4 beschränken
+    def _limit_input(entry):
+        val = entry.get()
+        filtered = ''.join(c for c in val if c.isdigit())[:4]
+        if val != filtered:
+            entry.delete(0, 'end')
+            entry.insert(0, filtered)
+    pin_entry1.bind('<KeyRelease>', lambda e: _limit_input(pin_entry1))
+    pin_entry2.bind('<KeyRelease>', lambda e: _limit_input(pin_entry2))
+
+    # ── Fehlermeldung ─────────────────────────────────────────────────────
+    fehler_label = ctk.CTkLabel(
+        win, text="", font=('Segoe UI', 12),
+        text_color=ERROR_COLOR
+    )
+    fehler_label.pack(pady=(6, 0))
+
+    # ── Buttons ───────────────────────────────────────────────────────────
+    btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+    btn_frame.pack(fill='x', padx=28, pady=(10, 20))
+
+    def _bestaetigen():
+        pin1 = pin_entry1.get().strip()
+        pin2 = pin_entry2.get().strip()
+        if len(pin1) != 4 or not pin1.isdigit():
+            fehler_label.configure(text="Der PIN muss genau 4 Ziffern haben.")
+            return
+        if pin1 != pin2:
+            fehler_label.configure(text="Die PINs stimmen nicht überein.")
+            pin_entry2.delete(0, 'end')
+            pin_entry2.focus_set()
+            return
+        if not firebase_db:
+            fehler_label.configure(text="Internetverbindung erforderlich.")
+            return
+        # PIN speichern
+        erfolg = _set_pin_firebase(name, pin1)
+        if erfolg:
+            win.destroy()
+            callback()
+        else:
+            fehler_label.configure(text="Fehler beim Speichern. Prüfe deine\nInternetverbindung.")
+
+    ctk.CTkButton(
+        btn_frame, text="PIN festlegen",
+        fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR,
+        height=42, corner_radius=10, font=('Segoe UI', 14, 'bold'),
+        command=_bestaetigen
+    ).pack(fill='x', pady=(0, 6))
+
+    if closable:
+        ctk.CTkButton(
+            btn_frame, text="Abbrechen",
+            fg_color="transparent", hover_color="#f3f4f6",
+            height=36, corner_radius=10, font=('Segoe UI', 13),
+            border_width=1, border_color=DISABLED_COLOR,
+            text_color=TEXT_COLOR,
+            command=win.destroy
+        ).pack(fill='x')
+
+    win.bind('<Return>', lambda e: _bestaetigen())
+
+    # Focus verzögert setzen, damit das Fenster vollständig gerendert ist
+    def _delayed_focus():
+        try:
+            win.grab_set()
+            win.focus_set()
+            pin_entry1.focus_set()
+        except Exception:
+            pass
+    win.after(150, _delayed_focus)
+
+
+def pin_eingabe_dialog(name: str, callback):
+    """Zeigt Dialog zur Eingabe des 4-stelligen PINs.
+    callback() wird bei korrektem PIN aufgerufen."""
+    win = ctk.CTkToplevel(app)
+    win.title("PIN eingeben")
+    win.geometry("400x300")
+    win.resizable(False, False)
+
+    # ── Titel ──────────────────────────────────────────────────────────────
+    ctk.CTkLabel(
+        win, text="🔒 PIN eingeben",
+        font=('Segoe UI', 22, 'bold')
+    ).pack(pady=(28, 6))
+    ctk.CTkLabel(
+        win,
+        text=f"Gib den PIN für \"{name}\" ein:",
+        font=('Segoe UI', 12), text_color=LIGHT_TEXT, justify='center'
+    ).pack(pady=(0, 14))
+
+    # ── Eingabefeld ───────────────────────────────────────────────────────
+    entry_frame = ctk.CTkFrame(win, fg_color="transparent")
+    entry_frame.pack(fill='x', padx=28)
+
+    pin_entry = ctk.CTkEntry(
+        entry_frame, placeholder_text="4-stelliger PIN",
+        height=42, font=('Segoe UI', 15), corner_radius=10,
+        show="●"
+    )
+    pin_entry.pack(fill='x')
+
+    # Eingabe auf Ziffern + max 4 beschränken
+    def _limit_input(event=None):
+        val = pin_entry.get()
+        filtered = ''.join(c for c in val if c.isdigit())[:4]
+        if val != filtered:
+            pin_entry.delete(0, 'end')
+            pin_entry.insert(0, filtered)
+    pin_entry.bind('<KeyRelease>', _limit_input)
+
+    # ── Fehlermeldung ─────────────────────────────────────────────────────
+    fehler_label = ctk.CTkLabel(
+        win, text="", font=('Segoe UI', 12),
+        text_color=ERROR_COLOR
+    )
+    fehler_label.pack(pady=(6, 0))
+
+    # ── Buttons ───────────────────────────────────────────────────────────
+    btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+    btn_frame.pack(fill='x', padx=28, pady=(10, 20))
+
+    def _pruefen():
+        pin = pin_entry.get().strip()
+        if len(pin) != 4 or not pin.isdigit():
+            fehler_label.configure(text="Bitte 4 Ziffern eingeben.")
+            return
+        if not firebase_db:
+            fehler_label.configure(text="Internetverbindung erforderlich.")
+            return
+        ergebnis = _verify_pin(name, pin)
+        if ergebnis is True:
+            win.destroy()
+            callback()
+        elif ergebnis is False:
+            fehler_label.configure(text="Falscher PIN.")
+            pin_entry.delete(0, 'end')
+            pin_entry.focus_set()
+        else:
+            fehler_label.configure(text="Verbindungsfehler. Versuche es erneut.")
+
+    ctk.CTkButton(
+        btn_frame, text="Bestätigen",
+        fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR,
+        height=42, corner_radius=10, font=('Segoe UI', 14, 'bold'),
+        command=_pruefen
+    ).pack(fill='x', pady=(0, 6))
+
+    ctk.CTkButton(
+        btn_frame, text="Abbrechen",
+        fg_color="transparent", hover_color="#f3f4f6",
+        height=36, corner_radius=10, font=('Segoe UI', 13),
+        border_width=1, border_color=DISABLED_COLOR,
+        text_color=TEXT_COLOR,
+        command=win.destroy
+    ).pack(fill='x')
+
+    win.bind('<Return>', lambda e: _pruefen())
+    # Focus verzögert setzen, damit das Fenster vollständig gerendert ist
+    def _delayed_focus():
+        try:
+            win.grab_set()
+            win.focus_set()
+            pin_entry.focus_set()
+        except Exception:
+            pass
+    win.after(150, _delayed_focus)
+
+
+# ── Ende PIN-System ───────────────────────────────────────────────────────
+
+
 def frage_benutzernamen():
     """Zeigt Eingabe-Dialog für den Benutzernamen beim ersten Start."""
     global aktueller_nutzer
@@ -605,6 +848,9 @@ def frage_benutzernamen():
         )
         eingabe_name = dialog.get_input()
         name = (eingabe_name or "").strip() or "Anonym"
+        # Validierung: Firebase-problematische Zeichen entfernen
+        name = re.sub(r'[/\\.\[\]#$]', '', name).strip() or "Anonym"
+        name = name[:30]
     except Exception as e:
         print(f"[User] Dialog fehlgeschlagen: {e}")
     aktueller_nutzer = name
@@ -614,40 +860,62 @@ def frage_benutzernamen():
 
 
 def _xp_current_week() -> str:
-    """Gibt die aktuelle ISO-Jahr-Woche zurück, z. B. '2026-09'."""
-    iso = datetime.now().isocalendar()
+    """Gibt die aktuelle Wochen-ID zurück (ISO Jahr-Woche).
+    Ab Sonntag 20:00 Uhr (Europe/Berlin) zählt bereits die neue Woche.
+    """
+    try:
+        now = datetime.now(ZoneInfo('Europe/Berlin'))
+    except Exception:
+        now = datetime.now()
+    # Sonntag (weekday==6) ab 20:00 → zählt als neue Woche
+    if now.weekday() == 6 and now.hour >= 20:
+        now = now + timedelta(hours=4)  # Kippt in den Montag → neue ISO-Woche
+    iso = now.isocalendar()
+    return f"{iso[0]}-{iso[1]:02d}"
+
+
+def _previous_week_id() -> str:
+    """Gibt die Wochen-ID der vorherigen Woche zurück (vor dem aktuellen _xp_current_week)."""
+    try:
+        now = datetime.now(ZoneInfo('Europe/Berlin'))
+    except Exception:
+        now = datetime.now()
+    if now.weekday() == 6 and now.hour >= 20:
+        now = now + timedelta(hours=4)
+    prev = now - timedelta(days=7)
+    iso = prev.isocalendar()
     return f"{iso[0]}-{iso[1]:02d}"
 
 
 def _lade_alle_xp() -> dict:
     """Liest xp.json als Multi-User-Dict. Format: {username: {week_xp, total_xp, last_reset}}."""
-    try:
-        if os.path.exists(XP_DATEI):
-            with open(XP_DATEI, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            # Altes Einzelnutzer-Format migrieren
-            if 'username' in data and isinstance(data.get('week_xp'), int):
-                name = data.get('username', 'Anonym')
-                return {name: {
-                    'week_xp':    data.get('week_xp', 0),
-                    'total_xp':   data.get('total_xp', 0),
-                    'last_reset': data.get('last_reset', ''),
-                }}
-            return data
-    except Exception:
-        pass
-    return {}
+    with _xp_lock:
+        try:
+            if os.path.exists(XP_DATEI):
+                with open(XP_DATEI, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                # Altes Einzelnutzer-Format migrieren
+                if 'username' in data and isinstance(data.get('week_xp'), int):
+                    name = data.get('username', 'Anonym')
+                    return {name: {
+                        'week_xp':    data.get('week_xp', 0),
+                        'total_xp':   data.get('total_xp', 0),
+                        'last_reset': data.get('last_reset', ''),
+                    }}
+                return data
+        except Exception:
+            pass
+        return {}
 
 
 def _speichere_alle_xp(alle: dict):
     """Schreibt Multi-User-Dict in xp.json."""
-    try:
-        if not os.path.exists(STAT_DIR):
-            os.makedirs(STAT_DIR)
-        with open(XP_DATEI, 'w', encoding='utf-8') as f:
-            json.dump(alle, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"[XP] Speichern fehlgeschlagen: {e}")
+    with _xp_lock:
+        try:
+            with open(XP_DATEI, 'w', encoding='utf-8') as f:
+                json.dump(alle, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[XP] Speichern fehlgeschlagen: {e}")
 
 
 def _init_xp_fuer_nutzer(name: str):
@@ -658,8 +926,76 @@ def _init_xp_fuer_nutzer(name: str):
         _speichere_alle_xp(alle)
 
 
+def _fuehre_globalen_weekly_reset_durch():
+    """Erstellt einen Snapshot der Rangliste der letzten Woche in Firebase.
+    Wird einmalig vom ersten User nach Sonntag 20:00 getriggert (Lazy Reset).
+    Schreibt Ergebnisse nach weekly_results/latest und setzt meta/last_reset.
+    """
+    if not firebase_db:
+        return
+    current_week = _xp_current_week()
+    prev_week = _previous_week_id()
+    try:
+        # Prüfen ob der globale Reset schon durchgeführt wurde
+        meta_ref = firebase_db.collection('meta').document('last_reset')
+        meta_doc = meta_ref.get()
+        if meta_doc.exists and meta_doc.to_dict().get('week_id', '') == current_week:
+            return  # Bereits durch einen anderen User erledigt
+
+        # Alle User aus Firebase laden
+        docs = firebase_db.collection('users').stream()
+        alle_spieler = []
+        for doc in docs:
+            d = doc.to_dict()
+            name = doc.id
+            wk_xp = d.get('week_xp', 0)
+            # Nur User die in der vorherigen Woche aktiv waren (>0 XP)
+            # und deren last_reset noch der alten Woche entspricht
+            if wk_xp > 0:
+                alle_spieler.append({
+                    'username':  name,
+                    'final_xp':  wk_xp,
+                    'total_xp':  d.get('total_xp', 0),
+                })
+
+        if not alle_spieler:
+            # Keine Aktivität → nur Meta-Flag setzen
+            meta_ref.set({'week_id': current_week})
+            return
+
+        # Sortieren: primär week_xp desc, sekundär total_xp desc
+        alle_spieler.sort(key=lambda x: (x['final_xp'], x['total_xp']), reverse=True)
+
+        # Ränge vergeben
+        ergebnisse = []
+        for rang, sp in enumerate(alle_spieler, start=1):
+            ergebnisse.append({
+                'username':   sp['username'],
+                'final_xp':   sp['final_xp'],
+                'final_rank':  rang,
+            })
+
+        # Ergebnisse in weekly_results/latest schreiben (überschreibt alte Daten)
+        firebase_db.collection('weekly_results').document('latest').set({
+            'week_id':            prev_week,
+            'results':            ergebnisse,
+            'total_participants': len(ergebnisse),
+            'created_at':         datetime.now().isoformat(),
+        })
+
+        # Meta-Flag setzen → verhindert doppelte Ausführung
+        meta_ref.set({'week_id': current_week})
+        print(f"[Weekly Reset] Globaler Snapshot für Woche {prev_week} erstellt "
+              f"({len(ergebnisse)} Teilnehmer).")
+
+    except Exception as e:
+        print(f"[Weekly Reset] Globaler Reset fehlgeschlagen: {e}")
+
+
 def pruefe_weekly_reset():
-    """Setzt week_xp des aktiven Nutzers zurück, wenn die Woche gewechselt hat."""
+    """Setzt week_xp des aktiven Nutzers zurück, wenn die Woche gewechselt hat.
+    Führt vorher den globalen Ranglisten-Snapshot durch (Lazy Reset).
+    """
     global xp_woche
     if not aktueller_nutzer:
         return
@@ -668,10 +1004,229 @@ def pruefe_weekly_reset():
         alle = _lade_alle_xp()
         eintrag = alle.get(aktueller_nutzer, {})
         if eintrag.get('last_reset', '') != current_week:
+            # Globalen Snapshot erstellen bevor der eigene XP-Wert resettet wird
+            _fuehre_globalen_weekly_reset_durch()
             xp_woche = 0
             speichere_xp()
     except Exception as e:
         print(f"[XP] Weekly-Reset-Prüfung fehlgeschlagen: {e}")
+
+
+def pruefe_siegerehrung() -> dict | None:
+    """Prüft ob eine ungesehene Siegerehrung für den aktuellen Nutzer vorliegt.
+    Gibt die Ergebnisdaten zurück oder None.
+    """
+    if not firebase_db or not aktueller_nutzer:
+        return None
+    try:
+        # Eigenes User-Dokument lesen: ceremony_seen_week
+        user_doc = firebase_db.collection('users').document(aktueller_nutzer).get()
+        seen_week = ''
+        if user_doc.exists:
+            seen_week = user_doc.to_dict().get('ceremony_seen_week', '')
+
+        # Letzte Wochen-Ergebnisse laden
+        result_doc = firebase_db.collection('weekly_results').document('latest').get()
+        if not result_doc.exists:
+            return None
+        data = result_doc.to_dict()
+        result_week = data.get('week_id', '')
+
+        # Bereits gesehen?
+        if seen_week == result_week:
+            return None
+
+        # Eigene Platzierung finden
+        results = data.get('results', [])
+        eigene_platzierung = None
+        for entry in results:
+            if entry.get('username') == aktueller_nutzer:
+                eigene_platzierung = entry
+                break
+
+        if eigene_platzierung is None:
+            # User war nicht aktiv in der Woche → keine Siegerehrung,
+            # aber als gesehen markieren damit nicht jedes Mal geprüft wird
+            try:
+                firebase_db.collection('users').document(aktueller_nutzer).set(
+                    {'ceremony_seen_week': result_week}, merge=True
+                )
+            except Exception:
+                pass
+            return None
+
+        # Top 3 extrahieren
+        top3 = [e for e in results if e.get('final_rank', 99) <= 3]
+
+        return {
+            'week_id':            result_week,
+            'your_rank':          eigene_platzierung['final_rank'],
+            'your_xp':            eigene_platzierung['final_xp'],
+            'total_participants': data.get('total_participants', len(results)),
+            'top3':               top3,
+        }
+    except Exception as e:
+        print(f"[Siegerehrung] Prüfung fehlgeschlagen: {e}")
+        return None
+
+
+def _markiere_siegerehrung_gesehen(week_id: str):
+    """Markiert die Siegerehrung als gesehen (async in Firebase)."""
+    if not firebase_db or not aktueller_nutzer:
+        return
+    def _save():
+        try:
+            firebase_db.collection('users').document(aktueller_nutzer).set(
+                {'ceremony_seen_week': week_id}, merge=True
+            )
+        except Exception as e:
+            print(f"[Siegerehrung] Gesehen-Markierung fehlgeschlagen: {e}")
+    threading.Thread(target=_save, daemon=True).start()
+
+
+def siegerehrung_anzeigen(daten: dict, callback=None):
+    """Zeigt einen modalen Siegerehrungs-Dialog mit Podium und eigener Platzierung.
+
+    Args:
+        daten: Dict von pruefe_siegerehrung() mit week_id, your_rank, your_xp,
+               total_participants, top3.
+        callback: Optionale Funktion die nach dem Schließen aufgerufen wird.
+    """
+    if not app:
+        return
+
+    GOLD   = "#FFD700"
+    SILVER = "#C0C0C0"
+    BRONZE = "#CD7F32"
+    MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+    RANK_COLORS = {1: GOLD, 2: SILVER, 3: BRONZE}
+    PODIUM_HEIGHTS = {1: 130, 2: 95, 3: 70}
+
+    win = ctk.CTkToplevel(app)
+    win.title("Wochenergebnis")
+    win.geometry("480x580")
+    win.resizable(False, False)
+    win.grab_set()
+    win.focus_set()
+    # Zentrieren
+    try:
+        win.after(10, lambda: win.geometry(
+            f"+{app.winfo_x() + app.winfo_width() // 2 - 240}"
+            f"+{app.winfo_y() + app.winfo_height() // 2 - 290}"
+        ))
+    except Exception:
+        pass
+
+    def _schliessen():
+        _markiere_siegerehrung_gesehen(daten['week_id'])
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        if callback:
+            callback()
+
+    win.protocol("WM_DELETE_WINDOW", _schliessen)
+
+    # ── Header ──────────────────────────────────────────────────────────
+    ctk.CTkLabel(
+        win, text="🏆  Wochenergebnis",
+        font=('Segoe UI', 28, 'bold'), text_color=GOLD
+    ).pack(pady=(28, 2))
+    ctk.CTkLabel(
+        win, text="Die Woche ist vorbei!",
+        font=('Segoe UI', 14), text_color=LIGHT_TEXT
+    ).pack(pady=(0, 18))
+
+    # ── Podium (Top 3) ─────────────────────────────────────────────────
+    top3 = sorted(daten.get('top3', []), key=lambda x: x.get('final_rank', 99))
+
+    if top3:
+        podium_frame = ctk.CTkFrame(win, fg_color="transparent")
+        podium_frame.pack(fill='x', padx=30, pady=(0, 10))
+
+        # Reihenfolge: Platz 2 links, Platz 1 mitte, Platz 3 rechts
+        order = []
+        platz2 = next((e for e in top3 if e['final_rank'] == 2), None)
+        platz1 = next((e for e in top3 if e['final_rank'] == 1), None)
+        platz3 = next((e for e in top3 if e['final_rank'] == 3), None)
+        for entry in [platz2, platz1, platz3]:
+            if entry:
+                order.append(entry)
+
+        podium_frame.grid_columnconfigure(tuple(range(len(order))), weight=1)
+
+        for col, entry in enumerate(order):
+            rank = entry['final_rank']
+            cell = ctk.CTkFrame(podium_frame, fg_color="transparent")
+            cell.grid(row=0, column=col, padx=6, sticky='s')
+
+            # Username (gekürzt)
+            display_name = entry['username']
+            if len(display_name) > 12:
+                display_name = display_name[:11] + "…"
+            is_me = (entry['username'] == aktueller_nutzer)
+            name_text = f"{display_name} (Du)" if is_me else display_name
+            ctk.CTkLabel(
+                cell, text=name_text,
+                font=('Segoe UI', 12, 'bold') if is_me else ('Segoe UI', 12),
+                text_color=BTN_COLOR if is_me else None,
+            ).pack(pady=(0, 2))
+
+            # XP
+            ctk.CTkLabel(
+                cell, text=f"{entry['final_xp']} XP",
+                font=('Segoe UI', 11), text_color=LIGHT_TEXT
+            ).pack(pady=(0, 4))
+
+            # Podest-Block
+            h = PODIUM_HEIGHTS.get(rank, 50)
+            color = RANK_COLORS.get(rank, LIGHT_TEXT)
+            podest = ctk.CTkFrame(cell, height=h, width=100, fg_color=color, corner_radius=10)
+            podest.pack_propagate(False)
+            podest.pack()
+            ctk.CTkLabel(
+                podest, text=MEDALS.get(rank, str(rank)),
+                font=('Segoe UI', 30)
+            ).pack(expand=True)
+
+    # ── Eigene Platzierung ──────────────────────────────────────────────
+    your_rank = daten['your_rank']
+    your_xp   = daten['your_xp']
+    total     = daten['total_participants']
+
+    result_frame = ctk.CTkFrame(win, corner_radius=16, fg_color=("#dbeafe", "#1e3a5f"))
+    result_frame.pack(fill='x', padx=40, pady=(18, 8))
+
+    ctk.CTkLabel(
+        result_frame, text="Dein Ergebnis",
+        font=('Segoe UI', 13), text_color=LIGHT_TEXT
+    ).pack(pady=(14, 2))
+
+    emoji = MEDALS.get(your_rank, "🏅")
+    rank_color = RANK_COLORS.get(your_rank, "#87CEEB")
+    ctk.CTkLabel(
+        result_frame, text=f"{emoji}  Platz {your_rank}",
+        font=('Segoe UI', 36, 'bold'), text_color=rank_color
+    ).pack(pady=(2, 2))
+
+    ctk.CTkLabel(
+        result_frame, text=f"{your_xp} XP diese Woche",
+        font=('Segoe UI', 15), text_color=None
+    ).pack(pady=(0, 2))
+
+    ctk.CTkLabel(
+        result_frame, text=f"von {total} Teilnehmern",
+        font=('Segoe UI', 12), text_color=LIGHT_TEXT
+    ).pack(pady=(0, 14))
+
+    # ── Weiter-Button ───────────────────────────────────────────────────
+    ctk.CTkButton(
+        win, text="Weiter  🚀", height=48, corner_radius=14,
+        fg_color=GOLD, hover_color="#e6c200", text_color="#1a1a2e",
+        font=('Segoe UI', 16, 'bold'),
+        command=_schliessen
+    ).pack(fill='x', padx=60, pady=(16, 24))
 
 
 def lade_xp():
@@ -731,35 +1286,59 @@ def speichere_xp():
                     'total_xp':   xp_gesamt,
                     'last_reset': current_week,
                     'updated_at': datetime.now().isoformat(),
-                })
+                }, merge=True)
             except Exception as e:
                 print(f"[Firebase] Speichern fehlgeschlagen: {e}")
         threading.Thread(target=_save, daemon=True).start()
 
 
 def benutzer_wechseln():
-    """Zeigt Dialog zum Wechseln oder Anlegen eines Benutzers."""
+    """Zeigt Dialog mit Eingabefeld zum Anmelden oder Erstellen eines Benutzers."""
     global aktueller_nutzer, xp_woche, xp_gesamt, xp_session
-
-    data = _lade_user_data()
-    bekannte_nutzer = data.get('users', [])
 
     # Dialog-Fenster
     win = ctk.CTkToplevel(app)
     win.title("Benutzer wechseln")
-    win.geometry("420x500")
+    win.geometry("420x340")
+    win.resizable(False, False)
     win.grab_set()
     win.focus_set()
 
-    ctk.CTkLabel(win, text="Benutzer wechseln", font=('Segoe UI', 22, 'bold')).pack(pady=(24, 8))
-    ctk.CTkLabel(win, text="Wähle einen Benutzer oder erstelle einen neuen:",
-                 font=('Segoe UI', 13), text_color=LIGHT_TEXT).pack(pady=(0, 16))
+    # ── Titel ──────────────────────────────────────────────────────────────
+    ctk.CTkLabel(
+        win, text="Benutzer wechseln",
+        font=('Segoe UI', 22, 'bold')
+    ).pack(pady=(28, 6))
+    ctk.CTkLabel(
+        win,
+        text="Gib den Benutzernamen ein, mit dem du dich\nanmelden oder den du neu erstellen möchtest:",
+        font=('Segoe UI', 12), text_color=LIGHT_TEXT, justify='center'
+    ).pack(pady=(0, 14))
 
-    scroll = ctk.CTkScrollableFrame(win, height=200)
-    scroll.pack(fill='x', padx=24)
+    # ── Eingabefeld ────────────────────────────────────────────────────────
+    entry_frame = ctk.CTkFrame(win, fg_color="transparent")
+    entry_frame.pack(fill='x', padx=28)
 
-    def _waehle(name):
-        global aktueller_nutzer, xp_woche, xp_gesamt, xp_session
+    name_entry = ctk.CTkEntry(
+        entry_frame, placeholder_text="Benutzername...",
+        height=42, font=('Segoe UI', 15), corner_radius=10
+    )
+    name_entry.pack(fill='x')
+
+    # ── Fehlermeldung (zunächst unsichtbar) ────────────────────────────────
+    fehler_label = ctk.CTkLabel(
+        win, text="", font=('Segoe UI', 12),
+        text_color=ERROR_COLOR
+    )
+    fehler_label.pack(pady=(4, 0))
+
+    # ── Buttons ────────────────────────────────────────────────────────────
+    btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+    btn_frame.pack(fill='x', padx=28, pady=(10, 20))
+
+    def _wechsle_zu(name: str):
+        """Nutzer aktivieren, Daten laden, Dialog schließen."""
+        global aktueller_nutzer, xp_session
         aktueller_nutzer = name
         speichere_benutzernamen(name)
         xp_session = 0
@@ -767,71 +1346,190 @@ def benutzer_wechseln():
         lade_xp()
         update_xp_label()
         win.destroy()
-        # Startbildschirm neu aufbauen damit Nutzername aktuell ist
-        startbildschirm()
+        # Siegerehrung prüfen
+        ceremony = pruefe_siegerehrung()
+        if ceremony:
+            siegerehrung_anzeigen(ceremony, callback=startbildschirm)
+        else:
+            startbildschirm()
 
-    for nutzer in bekannte_nutzer:
-        row = ctk.CTkFrame(scroll, fg_color="transparent")
-        row.pack(fill='x', pady=3)
-        aktiv_marker = "  ✓" if nutzer == aktueller_nutzer else ""
-        farbe = SPRACH_COLOR if nutzer == aktueller_nutzer else BTN_COLOR
-        ctk.CTkButton(
-            row, text=f"{nutzer}{aktiv_marker}",
-            fg_color=farbe, hover_color=BTN_HOVER_COLOR,
-            height=44, corner_radius=12, font=('Segoe UI', 15),
-            command=lambda n=nutzer: _waehle(n)
-        ).pack(fill='x')
+    def _wechsle_zu_nach_pin(name: str):
+        """Nutzer aktivieren nach PIN-Prüfung (Wechsel-Dialog ist bereits geschlossen)."""
+        global aktueller_nutzer, xp_session
+        aktueller_nutzer = name
+        speichere_benutzernamen(name)
+        xp_session = 0
+        pruefe_weekly_reset()
+        lade_xp()
+        update_xp_label()
+        # Siegerehrung prüfen
+        ceremony = pruefe_siegerehrung()
+        if ceremony:
+            siegerehrung_anzeigen(ceremony, callback=startbildschirm)
+        else:
+            startbildschirm()
 
-    ctk.CTkLabel(win, text="Neuer Benutzer:", font=('Segoe UI', 14, 'bold')).pack(pady=(20, 6))
-    neu_entry = ctk.CTkEntry(win, placeholder_text="Name eingeben...", height=40, font=('Segoe UI', 14))
-    neu_entry.pack(fill='x', padx=24)
+    def _nutzer_existiert_firebase(name: str) -> bool:
+        """Prüft synchron, ob der Nutzer in Firebase existiert."""
+        if not firebase_db:
+            return False
+        try:
+            doc = firebase_db.collection('users').document(name).get()
+            return doc.exists
+        except Exception:
+            return False
 
-    def _neu_erstellen():
-        name = neu_entry.get().strip()
+    def _weiter():
+        name = name_entry.get().strip()
         if not name:
+            fehler_label.configure(text="Bitte einen Benutzernamen eingeben.")
             return
+        # Validierung: Firebase-problematische Zeichen entfernen
+        name = re.sub(r'[/\\.\[\]#$]', '', name).strip()
+        if not name:
+            fehler_label.configure(text="Ungültiger Name (enthält nur Sonderzeichen).")
+            return
+        name = name[:30]
+        fehler_label.configure(text="")
+
+        # Bekannt lokal?
+        bekannte_nutzer = _lade_user_data().get('users', [])
+        lokal_bekannt = name in bekannte_nutzer
+
+        # Bekannt in Firebase?
+        firebase_bekannt = _nutzer_existiert_firebase(name)
+
+        if lokal_bekannt or firebase_bekannt:
+            # Nutzer existiert → PIN prüfen
+            if not firebase_db:
+                fehler_label.configure(text="Internetverbindung erforderlich,\num den Account zu wechseln.")
+                return
+            hat_pin_status = _hat_pin(name)
+            if hat_pin_status is None:
+                fehler_label.configure(text="Verbindungsfehler. Versuche es erneut.")
+                return
+            if hat_pin_status:
+                # PIN eingeben
+                win.destroy()
+                pin_eingabe_dialog(name, callback=lambda: _wechsle_zu_nach_pin(name))
+            else:
+                # Kein PIN → erst erstellen, dann einloggen
+                win.destroy()
+                pin_erstellen_dialog(name, callback=lambda: _wechsle_zu_nach_pin(name), closable=False)
+        else:
+            # Nutzer unbekannt → Rückfrage
+            _zeige_erstellen_frage(name)
+
+    def _zeige_erstellen_frage(name: str):
+        """Blendet Eingabe-UI aus und zeigt Ja/Nein-Rückfrage."""
+        # Eingabe sperren
+        name_entry.configure(state='disabled')
+        weiter_btn.configure(state='disabled')
+        # Fenster etwas größer machen für die 2-zeilige Meldung + Buttons
+        win.geometry("420x370")
+
+        fehler_label.configure(
+            text=f'"{name}" existiert noch nicht.\nMöchtest du diesen Benutzer erstellen?',
+            text_color=WARNING_COLOR
+        )
+        # Buttons tauschen
+        weiter_btn.pack_forget()
+        abbr_btn.pack_forget()
+
+        ja_btn = ctk.CTkButton(
+            btn_frame, text="Ja, erstellen",
+            fg_color=SPRACH_COLOR, hover_color=SUCCESS_COLOR,
+            height=42, corner_radius=10, font=('Segoe UI', 14, 'bold'),
+            command=lambda: _erstelle_und_wechsle(name)
+        )
+        ja_btn.pack(fill='x', pady=(0, 6))
+
+        nein_btn = ctk.CTkButton(
+            btn_frame, text="Nein, zurück",
+            fg_color="transparent", hover_color="#f3f4f6",
+            height=38, corner_radius=10, font=('Segoe UI', 13),
+            border_width=1, border_color=DISABLED_COLOR,
+            text_color=TEXT_COLOR,
+            command=lambda: _zurueck(ja_btn, nein_btn)
+        )
+        nein_btn.pack(fill='x')
+
+    def _erstelle_und_wechsle(name: str):
         _init_xp_fuer_nutzer(name)
-        _waehle(name)
+        # Neuen Nutzer sofort in Firebase anlegen (ohne PIN – der kommt gleich)
+        if firebase_db:
+            try:
+                firebase_db.collection('users').document(name).set({
+                    'week_xp':    0,
+                    'total_xp':   0,
+                    'last_reset': _xp_current_week(),
+                    'created_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now().isoformat(),
+                }, merge=True)
+            except Exception as e:
+                print(f"[Firebase] Neuer Nutzer konnte nicht gespeichert werden: {e}")
+        # Dialog schließen, dann PIN erstellen lassen
+        win.destroy()
+        if firebase_db:
+            pin_erstellen_dialog(name, callback=lambda: _wechsle_zu_nach_pin(name), closable=False)
+        else:
+            # Offline: direkt einloggen, PIN wird beim nächsten Online-Start erzwungen
+            _wechsle_zu_nach_pin(name)
 
-    ctk.CTkButton(
-        win, text="Erstellen & wechseln",
+    def _zurueck(ja_btn, nein_btn):
+        """Zurück zur Eingabe."""
+        ja_btn.destroy()
+        nein_btn.destroy()
+        win.geometry("420x340")
+        name_entry.configure(state='normal')
+        name_entry.delete(0, 'end')
+        fehler_label.configure(text="", text_color=ERROR_COLOR)
+        weiter_btn.configure(state='normal')
+        weiter_btn.pack(fill='x', pady=(0, 6))
+        abbr_btn.pack(fill='x')
+        name_entry.focus_set()
+
+    weiter_btn = ctk.CTkButton(
+        btn_frame, text="Weiter",
         fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR,
-        height=44, corner_radius=12, font=('Segoe UI', 15),
-        command=_neu_erstellen
-    ).pack(fill='x', padx=24, pady=(10, 8))
+        height=42, corner_radius=10, font=('Segoe UI', 14, 'bold'),
+        command=_weiter
+    )
+    weiter_btn.pack(fill='x', pady=(0, 6))
 
-    ctk.CTkButton(
-        win, text="Abbrechen",
+    abbr_btn = ctk.CTkButton(
+        btn_frame, text="Abbrechen",
         fg_color="transparent", hover_color="#f3f4f6",
-        height=36, corner_radius=12, font=('Segoe UI', 13),
+        height=36, corner_radius=10, font=('Segoe UI', 13),
         border_width=1, border_color=DISABLED_COLOR,
+        text_color=TEXT_COLOR,
         command=win.destroy
-    ).pack(fill='x', padx=24, pady=(0, 16))
+    )
+    abbr_btn.pack(fill='x')
+
+    # Enter-Taste bestätigt direkt
+    win.bind('<Return>', lambda e: _weiter())
+    name_entry.focus_set()
 
 
 def update_xp_label():
     """Aktualisiert den XP-Label im Startbildschirm."""
-    lbl = globals().get('xp_start_label')
-    if lbl:
-        try:
-            if lbl.winfo_exists():
-                lbl.configure(text=f"⭐  XP diese Woche:  {xp_woche}")
-        except Exception:
-            pass
+    try:
+        if xp_start_label is not None and xp_start_label.winfo_exists():
+            xp_start_label.configure(text=f"XP diese Woche:  {xp_woche}")
+    except Exception:
+        pass
 
 
 def lade_vokabeln():
     global alle_vokabeln, vokabeln_zu_lernen
     alle_vokabeln.clear()
 
-    if not os.path.exists(VOCAB_DIR):
-        os.makedirs(VOCAB_DIR)
-
     if not os.path.exists(get_csv_datei()):
 
         messagebox.showerror(
             "Datei nicht gefunden",
-            f"Die Datei {CSV_DATEI} existiert nicht."
+            f"Die Datei {get_csv_datei()} existiert nicht."
         )
         return
 
@@ -987,7 +1685,6 @@ halte dich strikt an diese Regeln."""
         )
     except Exception as e:
         error_msg = f"Fehler bei der Anfrage an OpenAI:\n{e}"
-        print(f"DEBUG ERROR DETAILS: {e}")  # Print to terminal for debugging
         messagebox.showerror("API Fehler", error_msg)
         return []
 
@@ -1051,13 +1748,7 @@ def extract_pairs_from_image(path: str) -> list[dict]:
         config="--oem 1 --psm 6"
     )
     
-    # DEBUG: RAW-Text von Tesseract im Terminal ausgeben
-    print("=== TESSERACT RAW TEXT ===")
-    print(raw)
-    print("==========================")
-    
     if not raw.strip():
-        print("DEBUG: Tesseract hat auf dem Bild keinen Text gefunden.")
         return []
         
     return extract_pairs_with_gpt(raw)
@@ -1069,6 +1760,9 @@ temp_upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp
 os.makedirs(temp_upload_dir, exist_ok=True)
 
 flask_app = Flask(__name__)
+flask_app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10 MB max upload
+ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 # Reduziere Flask Logging output in der Konsole
 import logging
 log = logging.getLogger('werkzeug')
@@ -1086,16 +1780,6 @@ def get_local_ip():
     finally:
         s.close()
     return ip
-
-def get_free_port():
-    """ Sucht einen freien, zufälligen Port """
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('', 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-FLASK_PORT = get_free_port()
 
 @flask_app.route('/')
 def upload_form():
@@ -1146,9 +1830,22 @@ def handle_upload():
     if file.filename == '':
         return "Keine Datei ausgewählt.", 400
     if file:
+        # Dateigrößen-Check
+        file.seek(0, 2)
+        size = file.tell()
+        file.seek(0)
+        if size > MAX_UPLOAD_SIZE:
+            return "Datei zu groß (max. 10 MB).", 400
+
         filename = secure_filename(file.filename)
         if not filename:
             filename = f"image_{int(time.time())}.jpg"
+
+        # Dateityp-Check
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return "Ungültiger Dateityp. Nur Bilder erlaubt.", 400
+
         filepath = os.path.join(temp_upload_dir, filename)
         file.save(filepath)
         
@@ -1188,9 +1885,6 @@ FLASK_PORT = get_free_port()
 def start_flask_server():
     # Läuft im Hintergrund auf einem dynamischen Port (vermeidet 'Address already in use' auf macOS)
     flask_app.run(host='0.0.0.0', port=FLASK_PORT, debug=False, use_reloader=False)
-
-# Flask Server als Daemon starten, damit er beendet wird, wenn das Hauptprogramm schließt
-threading.Thread(target=start_flask_server, daemon=True).start()
 
 def show_qr_popup():
     """ Zeigt den QR-Code als Toplevel Fenster an """
@@ -1237,32 +1931,48 @@ def process_mobile_upload(filepath):
     if qr_popup_window is not None and qr_popup_window.winfo_exists():
         qr_popup_window.destroy()  # Popup schließen
 
-    editor_feedback.configure(text="Handy-Bild empfangen. Import läuft…", text_color=SUCCESS_COLOR)
-    app.update_idletasks()
+    # Falls Editor noch nicht initialisiert, jetzt vorbereiten
+    if editor_feedback is None:
+        editor()
 
     try:
-        neue = extract_pairs_from_image(filepath)
-    except Exception as e:
-        editor_feedback.configure(text=f"Fehler: {e}", text_color=ERROR_COLOR)
-        return
-
-    if not neue:
-        editor_feedback.configure(text="⚠️ Kein lesbarer Text gefunden (Foto unscharf?)", text_color=WARNING_COLOR)
+        editor_feedback.configure(text="Handy-Bild empfangen. Import läuft…", text_color=SUCCESS_COLOR)
         app.update_idletasks()
-        return
 
-    imported = 0
+        try:
+            neue = extract_pairs_from_image(filepath)
+        except Exception as e:
+            editor_feedback.configure(text=f"Fehler: {e}", text_color=ERROR_COLOR)
+            return
+
+        if not neue:
+            editor_feedback.configure(text="⚠️ Kein lesbarer Text gefunden (Foto unscharf?)", text_color=WARNING_COLOR)
+            app.update_idletasks()
+            return
+
+        imported = _import_pairs(neue)
+        save_vokabeln_csv()
+        show_editor()
+        editor_feedback.configure(text=f"✅ {imported} Vokabel(n) vom Handy importiert!", text_color=SUCCESS_COLOR)
+    finally:
+        # Temp-Datei aufräumen
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+
+
+def _import_pairs(neue: list[dict]) -> int:
+    """Fügt neue Vokabelpaare hinzu (Duplikate werden übersprungen). Gibt Anzahl importierter zurück."""
     bestehend = {(v['Deutsch'], v['Englisch']) for v in alle_vokabeln}
+    imported = 0
     for v in neue:
-        tup = (v['Deutsch'], v['Englisch'])
-        if tup not in bestehend:
+        key = (v['Deutsch'], v['Englisch'])
+        if key not in bestehend:
             alle_vokabeln.append(v)
-            bestehend.add(tup)
+            bestehend.add(key)
             imported += 1
-    
-    save_vokabeln_csv()
-    show_editor()
-    editor_feedback.configure(text=f"✅ {imported} Vokabel(n) vom Handy importiert!", text_color=SUCCESS_COLOR)
+    return imported
 
 
 # ====================== Upload- und Import-Funktion ==========================
@@ -1277,17 +1987,10 @@ def upload_and_import():
     app.update_idletasks()
 
     imported = 0
-    bestehend = {(v['Deutsch'], v['Englisch']) for v in alle_vokabeln}
-
     for p in paths:
         try:
             neue = extract_pairs_from_image(p)
-            for v in neue:
-                key = (v['Deutsch'], v['Englisch'])
-                if key not in bestehend:
-                    alle_vokabeln.append(v)
-                    bestehend.add(key)
-                    imported += 1
+            imported += _import_pairs(neue)
         except Exception as e:
             editor_feedback.configure(text=f"Import fehlgeschlagen: {e}")
             return
@@ -1300,25 +2003,13 @@ def upload_and_import():
 def wechsel_mode():
     ctk.set_appearance_mode("Light" if ctk.get_appearance_mode()=="Dark" else "Dark")
 
-# Neue Hilfsfunktion: erzeugt einen zentrierten Container mit Grid-Spacern
-def create_center_container(parent):
-    """Erzeugt einen Vollflächen-Container mit mittigem Unter-Frame.
-    Rückgabe: (outer_container, center_frame)
-    """
-    outer = ctk.CTkFrame(parent)
-    outer.pack(expand=True, fill='both')
-    outer.grid_rowconfigure(0, weight=1)
-    outer.grid_rowconfigure(1, weight=0)
-    outer.grid_rowconfigure(2, weight=1)
-    outer.grid_columnconfigure(0, weight=1)
-    center = ctk.CTkFrame(outer)
-    center.grid(row=1, column=0, sticky='n')
-    # Center-Frame Breite wachsen lassen
-    center.grid_columnconfigure(0, weight=1)
-    return outer, center
-
 # ========================== Startbildschirm ==================================
 def startbildschirm():
+    if 'start' in frames:
+        try:
+            frames['start'].destroy()
+        except Exception:
+            pass
     frame = ctk.CTkFrame(app); frames['start'] = frame
 
     # Vollflächiger Outer-Container mit separater Bottom-Bar
@@ -1434,18 +2125,14 @@ def startbildschirm():
     # Nach Aufbau: Containerbreite dynamisch an inneren Inhalt + Shake-Puffer anpassen
     def _adjust_choice_width():
         try:
-            inner_ref = globals().get('start_choice_inner')
-            cont_ref = globals().get('start_choice_container')
-            if not inner_ref or not cont_ref:
+            if not start_choice_inner or not start_choice_container:
                 return
-            inner_ref.update_idletasks()
-            req = inner_ref.winfo_reqwidth()
+            start_choice_inner.update_idletasks()
+            req = start_choice_inner.winfo_reqwidth()
             need = req + 2 * START_CHOICE_SHAKE_AMPL + 12
-            cont_ref.configure(width=need)
-            # Linken Container auf gleiche Breite bringen
-            left_cont = globals().get('start_input_container')
-            if left_cont:
-                left_cont.configure(width=need)
+            start_choice_container.configure(width=need)
+            if start_input_container:
+                start_input_container.configure(width=need)
         except Exception:
             pass
     try:
@@ -1497,7 +2184,7 @@ def startbildschirm():
     global xp_start_label
     xp_start_label = ctk.CTkLabel(
         content,
-        text=f"⭐  XP diese Woche:  {xp_woche}",
+        text=f"XP diese Woche:  {xp_woche}",
         font=('Segoe UI', 20, 'bold'),
         text_color="#f59e0b"
     )
@@ -1534,8 +2221,8 @@ def startbildschirm():
     btn_settings.grid(row=0, column=2, padx=8, pady=6)
 
     btn_ranking = ctk.CTkButton(
-        actions_row, text="🏆  Rangliste", fg_color="#7c3aed",
-        hover_color="#5b21b6", width=200, height=60, corner_radius=20,
+        actions_row, text="Rangliste", fg_color=BTN_COLOR,
+        hover_color=BTN_HOVER_COLOR, width=200, height=60, corner_radius=20,
         font=('Segoe UI', 18, 'bold'),
         command=lambda: [rangliste_laden(), zeige_frame('rangliste')]
     )
@@ -1579,14 +2266,14 @@ def rangliste_screen():
     frames['rangliste'] = frame
 
     # Header-Leiste
-    header = ctk.CTkFrame(frame, height=64, fg_color="#7c3aed", corner_radius=0)
+    header = ctk.CTkFrame(frame, height=64, fg_color=BTN_COLOR, corner_radius=0)
     header.pack(fill='x')
     header.pack_propagate(False)
     header_inner = ctk.CTkFrame(header, fg_color="transparent")
     header_inner.pack(expand=True, fill='both', padx=16)
     ctk.CTkButton(
         header_inner, text="←", width=44, height=44, corner_radius=22,
-        fg_color="transparent", hover_color="#5b21b6", font=('Segoe UI', 22, 'bold'),
+        fg_color="transparent", hover_color=BTN_HOVER_COLOR, font=('Segoe UI', 22, 'bold'),
         command=lambda: zeige_frame('start')
     ).pack(side='left', pady=10)
     ctk.CTkLabel(
@@ -1616,9 +2303,9 @@ def rangliste_screen():
 
 def rangliste_laden():
     """Lädt Spielerdaten aus Firestore und füllt den Ranglisten-Screen."""
-    scroll = globals().get('rangliste_scroll_frame')
-    if scroll is None:
+    if rangliste_scroll_frame is None:
         return
+    scroll = rangliste_scroll_frame
 
     # Bestehende Einträge löschen
     for widget in scroll.winfo_children():
@@ -1682,9 +2369,9 @@ def rangliste_laden():
 
 def _render_rangliste(spieler: list):
     """Rendert die Ranglisten-Einträge in den scroll_frame."""
-    scroll = globals().get('rangliste_scroll_frame')
-    if scroll is None:
+    if rangliste_scroll_frame is None:
         return
+    scroll = rangliste_scroll_frame
 
     # Alte Widgets entfernen
     for widget in scroll.winfo_children():
@@ -1693,17 +2380,20 @@ def _render_rangliste(spieler: list):
         except Exception:
             pass
 
+    # Nur Spieler mit Wöchentlichen XP > 0 anzeigen (verwaiste Accounts ausblenden)
+    spieler_aktiv = [s for s in spieler if s.get('week_xp', 0) > 0]
+
     # Sortieren nach week_xp (absteigende Reihenfolge), Gleichstand → gesamt-XP
-    sorted_spieler = sorted(spieler, key=lambda x: (x['week_xp'], x['total_xp']), reverse=True)
+    sorted_spieler = sorted(spieler_aktiv, key=lambda x: (x['week_xp'], x['total_xp']), reverse=True)
 
     MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
     MEDAL_COLORS = {1: "#f59e0b", 2: "#9ca3af", 3: "#b45309"}
-    ROW_BG_SELF   = "#1e1b4b"   # Hervorhebung eigene Zeile
+    ROW_BG_SELF   = ("#dbeafe", "#1e3a5f")  # Hervorhebung eigene Zeile (hell/dunkel)
     ROW_BG_NORMAL = "transparent"
 
     if not sorted_spieler:
         ctk.CTkLabel(
-            scroll, text="Noch keine Spieler vorhanden.",
+            scroll, text="Diese Woche noch keine Aktivität.",
             font=('Segoe UI', 16), text_color=LIGHT_TEXT
         ).pack(pady=40)
         return
@@ -1733,15 +2423,15 @@ def _render_rangliste(spieler: list):
 
         # Name ("Du" wenn eigene Zeile)
         name_display = f"{s['username']}  👉 Du" if is_self else s['username']
-        name_color   = "#a78bfa" if is_self else None
+        name_color   = BTN_COLOR if is_self else None
         name_font    = ('Segoe UI', 18, 'bold') if is_self else ('Segoe UI', 17)
+        lbl_kwargs = {'text_color': name_color} if name_color else {}
         ctk.CTkLabel(
-            row, text=name_display, font=name_font,
-            text_color=name_color or ("", "white")
+            row, text=name_display, font=name_font, **lbl_kwargs
         ).grid(row=0, column=1, padx=8, pady=14, sticky='w')
 
         # XP rechts
-        xp_text = f"⭐ {s['week_xp']} XP"
+        xp_text = f"{s['week_xp']} XP"
         ctk.CTkLabel(
             row, text=xp_text,
             font=('Segoe UI', 17, 'bold'), text_color="#f59e0b"
@@ -1846,7 +2536,7 @@ def einstellungen_screen():
         # Training starten
         reset_for_new_attempt()
         try:
-            punktzahl_label.configure(text=f"⭐ Session: +{xp_session} XP")
+            punktzahl_label.configure(text=f"XP: +{xp_session} XP")
         except Exception:
             pass
         naechste_vokabel()
@@ -1877,10 +2567,6 @@ def update_typo_label(value, label, labels, colors):
     """Aktualisiert das Label für die Tippfehler-Toleranz"""
     label.configure(text=labels[value], text_color=colors[value])
 
-
-
-# ========================= Prüfungs-Einstellungen-Screen =====================
-# (Entfernt)
 
 
 #=============================Sprache-Verwaltung-Screen ==========================
@@ -1984,6 +2670,10 @@ def delete_language(sprache):
     global aktuelle_sprache
     if aktuelle_sprache == sprache:
         aktuelle_sprache = None
+        alle_vokabeln.clear()
+        vokabel_statistik.clear()
+        vokabeln_zu_lernen.clear()
+        learning_queue.clear()
 
     # UI neu aufbauen
     sprache_verwalten_screen()
@@ -1999,6 +2689,42 @@ def neue_sprache_hinzufuegen(name):
         zeige_frame('start')
 
 # ============================ Trainer-Screen =================================
+def trainer_zurueck():
+    """Zurück zum Startbildschirm mit Warnung, wenn Session-XP verloren gehen würden."""
+    if xp_session > 0:
+        win = ctk.CTkToplevel(app)
+        win.title("Training abbrechen?")
+        win.geometry("380x210")
+        win.resizable(False, False)
+        win.grab_set()
+        win.focus_set()
+        ctk.CTkLabel(
+            win, text="Training abbrechen?",
+            font=('Segoe UI', 20, 'bold')
+        ).pack(pady=(24, 8))
+        ctk.CTkLabel(
+            win,
+            text=f"Du verlierst {xp_session} XP!",
+            font=('Segoe UI', 15), text_color=ERROR_COLOR
+        ).pack(pady=(0, 20))
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+        btn_frame.pack(fill='x', padx=30)
+        ctk.CTkButton(
+            btn_frame, text="Abbrechen & verlassen",
+            fg_color=ERROR_COLOR, hover_color="#b91c1c",
+            height=42, corner_radius=10, font=('Segoe UI', 13, 'bold'),
+            command=lambda: (win.destroy(), zeige_frame('start'))
+        ).pack(fill='x', pady=(0, 8))
+        ctk.CTkButton(
+            btn_frame, text="Weiterlernen",
+            fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR,
+            height=42, corner_radius=10, font=('Segoe UI', 13, 'bold'),
+            command=win.destroy
+        ).pack(fill='x')
+    else:
+        zeige_frame('start')
+
+
 def trainer():
     frame = ctk.CTkFrame(app); frames['trainer'] = frame
 
@@ -2011,7 +2737,7 @@ def trainer():
 
     ctk.CTkButton(top, image=haus_icon, text="", fg_color=BTN_COLOR,
                   width=40, height=40, corner_radius=20,
-                  command=lambda: zeige_frame('start')).pack(side='left', padx=10, pady=10)
+                  command=trainer_zurueck).pack(side='left', padx=10, pady=10)
 
     if aktuelle_sprache:
         global trainer_sprach_label
@@ -2084,7 +2810,7 @@ def trainer():
     feedback_label.grid(row=4, column=0, pady=20, sticky='n')
 
     # XP Session-Anzeige (row 5)
-    punktzahl_label = ctk.CTkLabel(content, text=f"⭐ Session: +{xp_session} XP", font=('Arial', 22))
+    punktzahl_label = ctk.CTkLabel(content, text=f"XP: +{xp_session} XP", font=('Arial', 22))
     punktzahl_label.grid(row=5, column=0, pady=20, sticky='n')
 
     # Progress unten (row 6)
@@ -2229,12 +2955,6 @@ def zeige_statistik():
     ctk.CTkLabel(statistik_frame, text=f"Prozent richtig: {pct_tot:.2f}%", font=dt_font
     ).grid(row=row+1, column=0, columnspan=4, padx=10, pady=(0,10), sticky='w')
 
-    # Grid-Stretch: erste Spalte breiter, andere flexibel
-    statistik_frame.grid_columnconfigure(0, weight=3)
-    statistik_frame.grid_columnconfigure(1, weight=1)
-    statistik_frame.grid_columnconfigure(2, weight=1)
-    statistik_frame.grid_columnconfigure(3, weight=1)
-
 def statistik_zuruecksetzen():
     if not messagebox.askyesno("Bestätigung", "Möchten Sie wirklich alle Statistiken zurücksetzen?"):
         return
@@ -2252,14 +2972,7 @@ def editor():
                   corner_radius=20, command=lambda: zeige_frame('start')).pack(anchor='nw', padx=10, pady=10)
     
     # Sprachanzeige im Editor
-    if aktuelle_sprache:
-        ctk.CTkLabel(
-            frame, 
-            text=f"Vokabel-Editor", 
-            font=('Arial',30)
-        ).pack(pady=(20,10))
-    else:
-        ctk.CTkLabel(frame, text="Vokabel-Editor", font=('Arial',30)).pack(pady=(20,10))
+    ctk.CTkLabel(frame, text="Vokabel-Editor", font=('Arial',30)).pack(pady=(20,10))
     global editor_feedback
     editor_feedback = ctk.CTkLabel(frame, text="", font=('Arial',8), text_color="green"); editor_feedback.pack(pady=(0,10))
     
@@ -2398,7 +3111,9 @@ def reenable_all_buttons(widget):
     try:
         import customtkinter as ctk
         if isinstance(widget, ctk.CTkButton):
-            widget.configure(state="normal")
+            # Absichtlich deaktivierte Buttons nicht reaktivieren
+            if not getattr(widget, '_keep_disabled', False):
+                widget.configure(state="normal")
         for child in widget.winfo_children():
             reenable_all_buttons(child)
     except Exception:
@@ -2407,11 +3122,13 @@ def reenable_all_buttons(widget):
 
 def save_editor():
     global alle_vokabeln, editor_entries
-    for idx, (de_e, en_e) in enumerate(editor_entries):
+    neue_liste = []
+    for de_e, en_e in editor_entries:
         d = de_e.get().strip()
         e = en_e.get().strip()
         if d and e:
-            alle_vokabeln[idx] = {'Deutsch': d, 'Englisch': e}
+            neue_liste.append({'Deutsch': d, 'Englisch': e})
+    alle_vokabeln = neue_liste
     save_vokabeln_csv()
     editor_feedback.configure(text=f"{EMOJI_OK}Änderungen gespeichert")
     show_editor()
@@ -2694,14 +3411,19 @@ def pruefe_antwort(event=None, user_answer=None):
     if training_settings.get('mode', 'input') == 'choice':
         set_choice_buttons_state('disabled')
 
+    global combo_streak
     xp_gewinn = 0
+    is_correct = False
+    mode = training_settings.get('mode', 'input')
+
     if ant.lower() == kor.lower():
         feedback_label.configure(text=f"{EMOJI_OK}Richtig!", text_color=SUCCESS_COLOR)
         vokabel_statistik[key]['richtig'] += 1
         vokabel_repetitions[key] = vokabel_repetitions.get(key, 0) + 1
-        xp_gewinn = 10
+        xp_gewinn = 10 if mode == 'input' else 2
+        is_correct = True
     else:
-        if training_settings.get('mode', 'input') == 'input' and is_typo(ant, kor):
+        if mode == 'input' and is_typo(ant, kor):
             feedback_label.configure(
                 text=f"{EMOJI_PART}Fast richtig! \nRichtig: {kor}",
                 text_color=WARNING_COLOR
@@ -2709,6 +3431,7 @@ def pruefe_antwort(event=None, user_answer=None):
             vokabel_statistik[key]['richtig'] += 1
             vokabel_repetitions[key] = vokabel_repetitions.get(key, 0) + 1
             xp_gewinn = 5
+            is_correct = True
         else:
             feedback_label.configure(
                 text=f"{EMOJI_BAD}Falsch! Richtig: {kor}",
@@ -2718,13 +3441,28 @@ def pruefe_antwort(event=None, user_answer=None):
             # Bei Fehler: Vokabel wieder hinten anstellen
             learning_queue.append(aktuelle_vokabel)
 
+    # Combo-Bonus (nur Eingabe-Modus)
+    combo_bonus = 0
+    if mode == 'input':
+        if is_correct:
+            combo_streak += 1
+            if combo_streak >= 5 and combo_streak % 5 == 0:
+                level = combo_streak // 5
+                combo_bonus = level * 2
+                xp_gewinn += combo_bonus
+                try:
+                    combo_text = feedback_label.cget('text')
+                    feedback_label.configure(
+                        text=f"{combo_text}\n🔥 Combo x{combo_streak}! +{combo_bonus} Bonus-XP"
+                    )
+                except Exception:
+                    pass
+        else:
+            combo_streak = 0
+
+    # XP nur in der Session akkumulieren; Woche/Gesamt erst am Endbildschirm
     xp_session += xp_gewinn
-    xp_woche   += xp_gewinn
-    xp_gesamt  += xp_gewinn
-    if xp_gewinn > 0:
-        speichere_xp()
-        update_xp_label()
-    punktzahl_label.configure(text=f"⭐ Session: +{xp_session} XP")
+    punktzahl_label.configure(text=f"XP: +{xp_session} XP")
     statistik_speichern()
     update_fortschritt()
 
@@ -2856,23 +3594,23 @@ def update_start_choice_access():
     except Exception:
         count = 0
 
-    btn = globals().get('start_choice_button')
-    if not btn:
+    if not start_choice_button:
         return
 
     if count >= 5:
         # Reaktivieren inkl. Original-Command
         try:
-            orig_cmd = globals().get('start_choice_command')
-            if orig_cmd:
-                btn.configure(command=orig_cmd)
-            btn.configure(state="normal", fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR)
+            if start_choice_command:
+                start_choice_button.configure(command=start_choice_command)
+            start_choice_button.configure(state="normal", fg_color=BTN_COLOR, hover_color=BTN_HOVER_COLOR)
+            start_choice_button._keep_disabled = False
         except Exception:
             pass
     else:
         # Vollständig sperren: state disabled und command entfernen
         try:
-            btn.configure(command=lambda: None, state="disabled", fg_color=DISABLED_COLOR, hover_color=DISABLED_HOVER)
+            start_choice_button.configure(command=lambda: None, state="disabled", fg_color=DISABLED_COLOR, hover_color=DISABLED_HOVER)
+            start_choice_button._keep_disabled = True
         except Exception:
             pass
 
@@ -2893,7 +3631,9 @@ def on_locked_choice_click(event=None):
         return
 
     # Nur auslösen, wenn Container existiert und nicht bereits in Animation
-    cont = globals().get('start_choice_inner')
+    if not start_choice_inner:
+        return
+    cont = start_choice_inner
     if not cont:
         return
     global _shake_in_progress
@@ -2933,34 +3673,27 @@ def on_locked_choice_click(event=None):
 def update_start_buttons_alignment():
     # Synchronisiert die Breite/Höhe beider Start-Container und richtet die Unterkanten aus.
     try:
-        left_cont  = globals().get('start_input_container')
-        right_cont = globals().get('start_choice_container')
-        left_in    = globals().get('start_input_inner')
-        right_in   = globals().get('start_choice_inner')
-        if not (left_cont and right_cont and left_in and right_in):
+        if not (start_input_container and start_choice_container and start_input_inner and start_choice_inner):
             return
         # benötigte Breiten ermitteln
-        left_in.update_idletasks(); right_in.update_idletasks()
-        # Buttons ermitteln
-        left_btn = globals().get('start_input_button')
-        right_btn = globals().get('start_choice_button')
-        if left_btn: left_btn.update_idletasks()
-        if right_btn: right_btn.update_idletasks()
+        start_input_inner.update_idletasks(); start_choice_inner.update_idletasks()
+        if start_input_button: start_input_button.update_idletasks()
+        if start_choice_button: start_choice_button.update_idletasks()
         # Breite anhand der größeren inneren Breite
-        need_w = max(left_in.winfo_reqwidth(), right_in.winfo_reqwidth()) + 2 * START_CHOICE_SHAKE_AMPL + 12
+        need_w = max(start_input_inner.winfo_reqwidth(), start_choice_inner.winfo_reqwidth()) + 2 * START_CHOICE_SHAKE_AMPL + 12
         # gleiche Breite setzen
-        left_cont.configure(width=need_w)
-        right_cont.configure(width=need_w)
+        start_input_container.configure(width=need_w)
+        start_choice_container.configure(width=need_w)
         # gleiche (minimale) Höhe: Buttonhöhe + optional Labelhöhe + kleiner Abstand
-        btn_h_left = left_btn.winfo_reqheight() if left_btn else 0
-        btn_h_right = right_btn.winfo_reqheight() if right_btn else 0
+        btn_h_left = start_input_button.winfo_reqheight() if start_input_button else 0
+        btn_h_right = start_choice_button.winfo_reqheight() if start_choice_button else 0
         need_h = max(btn_h_left, btn_h_right)
         try:
-            left_cont.configure(height=need_h)
-            right_cont.configure(height=need_h)
+            start_input_container.configure(height=need_h)
+            start_choice_container.configure(height=need_h)
             # propagate aus, damit Höhe gehalten wird
-            left_cont.pack_propagate(False)
-            right_cont.pack_propagate(False)
+            start_input_container.pack_propagate(False)
+            start_choice_container.pack_propagate(False)
         except Exception:
             pass
     except Exception:
@@ -2989,8 +3722,9 @@ def zeige_frame(name: str):
 # ====================== Reset- & Neustart-Funktionen ========================
 
 def reset_for_new_attempt():
-    global xp_session, vokabeln_zu_lernen, runde_status, vokabel_repetitions, learning_queue, initial_queue_len
+    global xp_session, vokabeln_zu_lernen, runde_status, vokabel_repetitions, learning_queue, initial_queue_len, combo_streak
     xp_session = 0
+    combo_streak = 0
     vokabeln_zu_lernen = alle_vokabeln.copy()
     random.shuffle(vokabeln_zu_lernen)
     runde_status.clear()
@@ -3025,12 +3759,24 @@ def starte_neu():
     zeige_frame('trainer')
     try:
         if punktzahl_label:
-            punktzahl_label.configure(text=f"⭐ Session: +{xp_session} XP")
+            punktzahl_label.configure(text=f"XP: +{xp_session} XP")
     except Exception:
         pass
     naechste_vokabel()
 
 def endbildschirm():
+    global xp_woche, xp_gesamt
+    # XP der Session jetzt erst in Woche/Gesamt übertragen und speichern
+    xp_woche  += xp_session
+    xp_gesamt += xp_session
+    speichere_xp()
+    update_xp_label()
+
+    if 'ende' in frames:
+        try:
+            frames['ende'].destroy()
+        except Exception:
+            pass
     frame = ctk.CTkFrame(app); frames['ende'] = frame
 
     outer = ctk.CTkFrame(frame)
@@ -3046,7 +3792,7 @@ def endbildschirm():
         lbl_lang = ctk.CTkLabel(center, text=aktuelle_sprache.capitalize(), font=('Segoe UI', 24, 'bold'), text_color=SPRACH_COLOR)
         lbl_lang.pack(pady=(0, 16))
 
-    score_lbl = ctk.CTkLabel(center, text=f"⭐  +{xp_session} XP diese Session", font=('Arial', 26))
+    score_lbl = ctk.CTkLabel(center, text=f"{xp_session} XP diese Session", font=('Arial', 26))
     score_lbl.pack(pady=8)
     ctk.CTkLabel(center, text=f"XP diese Woche gesamt: {xp_woche}", font=('Arial', 18), text_color=LIGHT_TEXT).pack(pady=8)
 
@@ -3070,13 +3816,17 @@ if __name__ == "__main__":
     except Exception:
         pass
     try:
-        app.state('zoomed')
-    except tk.TclError:
-        app.state('normal')
-    try:
-        app.geometry("1200x800")
-    except Exception:
+        if sys.platform == 'darwin':
+            app.geometry(f"{app.winfo_screenwidth()}x{app.winfo_screenheight()}+0+0")
+        else:
+            app.state('zoomed')
+    except (tk.TclError, Exception):
         pass
+    if sys.platform != 'darwin':
+        try:
+            app.geometry("1200x800")
+        except Exception:
+            pass
     try:
         app.update_idletasks()
     except Exception:
@@ -3097,7 +3847,6 @@ if __name__ == "__main__":
         haus_icon  = lade_icon("haus.png")
         birne_icon = lade_icon("birne.png")
         tipp_icon  = lade_icon("tipp.png")
-        flagge_icon = lade_icon("Flagge.png")
     except Exception:
         pass
 
@@ -3150,6 +3899,32 @@ if __name__ == "__main__":
     except Exception:
         # Fallback
         startbildschirm()
+
+    # PIN-Check für aktiven Benutzer (Migration: bestehende Accounts ohne PIN)
+    try:
+        if aktueller_nutzer and firebase_db:
+            hat_pin_status = _hat_pin(aktueller_nutzer)
+            if hat_pin_status is False:
+                # Account existiert, aber hat noch keinen PIN → Erstellung erzwingen
+                pin_erstellen_dialog(aktueller_nutzer, callback=lambda: None, closable=False)
+            # hat_pin_status is None → Firebase-Fehler, überspringen (nächstes Mal)
+            # hat_pin_status is True → alles gut, kein PIN nötig beim normalen Start
+    except Exception as e:
+        print(f"[PIN] Startup-Check fehlgeschlagen: {e}")
+
+    # Siegerehrung prüfen (nach Screens + PIN-Check, damit Hauptfenster existiert)
+    try:
+        ceremony_data = pruefe_siegerehrung()
+        if ceremony_data:
+            siegerehrung_anzeigen(ceremony_data)
+    except Exception as e:
+        print(f"[Siegerehrung] Startup-Check fehlgeschlagen: {e}")
+
+    # Flask-Server im Hintergrund starten
+    try:
+        threading.Thread(target=start_flask_server, daemon=True).start()
+    except Exception as e:
+        print(f"[Flask] Server-Start fehlgeschlagen: {e}")
 
     # Global Keys
     try:

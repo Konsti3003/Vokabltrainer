@@ -2,3 +2,23 @@
 firebase_credentials.json
 stats/xp.json
 stats/user.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Temp-Dateien
+temp_uploads/
+
+# OS
+.DS_Store
+desktop.ini
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
