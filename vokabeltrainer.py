@@ -306,19 +306,25 @@ os.makedirs(STAT_DIR, exist_ok=True)
 dotenv_path = os.path.join(APP_DIR, '.env')
 load_dotenv(dotenv_path=dotenv_path, override=True)  # <--- Erzwingt das Laden aus lokaler .env und ignoriert globale Keys
 
-# Client explizit initialisieren (verhindert Probleme mit alten global configs)
+# Client wird lazily beim ersten Verwendung erstellt (verhindert Startprobleme)
 api_key = os.getenv("OPENAI_API_KEY")
-client = None
+_openai_client = None
 
-if api_key:
-    # Optional: Debug-Print (nur die ersten 10 Zeichen)
-    # print(f"API Key geladen: {api_key[:10]}...")
+def get_openai_client():
+    """Gibt den OpenAI-Client zurück, erstellt ihn beim ersten Aufruf."""
+    global _openai_client
+    if _openai_client is not None:
+        return _openai_client
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        print("Warnung: OPENAI_API_KEY ist nicht gesetzt! Einige Funktionen sind möglicherweise deaktiviert.")
+        return None
     try:
-        client = OpenAI(api_key=api_key)
-    except Exception as e:
+        _openai_client = OpenAI(api_key=key)
+    except BaseException as e:
         print(f"Fehler beim Initialisieren des OpenAI Clients: {e}")
-else:
-    print("Warnung: OPENAI_API_KEY ist nicht gesetzt! Einige Funktionen sind möglicherweise deaktiviert.")
+        return None
+    return _openai_client
 
 # ======================= Lade-Icon-Funktion ===================================
 def lade_icon(dateiname, size=(60,60)):
@@ -1670,6 +1676,7 @@ Ausgabe: "Menge;amount"
 halte dich strikt an diese Regeln."""
 )
 
+    client = get_openai_client()
     if not client:
         messagebox.showerror("Fehler", "Kein OpenAI Client initialisiert (API Key fehlt).")
         return []
