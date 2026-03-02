@@ -1,21 +1,61 @@
 {
-    "untröstlich|heartbroken": {
-        "richtig": 4,
-        "falsch": 0
-    },
-    "ängstlich|terrified": {
-        "richtig": 12,
-        "falsch": 2
-    },
-    "aufgeregt|thrilled": {
-        "richtig": 9,
-        "falsch": 1
-    },
-    "blau|blue": {
+    "Freundschaft|friendship": {
         "richtig": 1,
         "falsch": 0
     },
-    "grün|green": {
+    "Sicherheit|safety": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "Bitte|request": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "schockieren|to shock": {
+        "richtig": 1,
+        "falsch": 1
+    },
+    "geheim|secret": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "indirekt|indirect": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "sich zu jm. hingezogen fühlen|to be attracted to sb.": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "mit jm. zusammen sein|to be seeing sb.": {
+        "richtig": 1,
+        "falsch": 1
+    },
+    "sich (in jn.) verlieben|to fall in love": {
+        "richtig": 1,
+        "falsch": 1
+    },
+    "mit jm. gehen|to date sb.": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "Schluss machen|to break up": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "sich kennenlernen|to get to know sb.": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "verwirrt|confused": {
+        "richtig": 1,
+        "falsch": 0
+    },
+    "verängstigt|frightened": {
+        "richtig": 1,
+        "falsch": 2
+    },
+    "untröstlich|heartbroken": {
         "richtig": 1,
         "falsch": 0
     }

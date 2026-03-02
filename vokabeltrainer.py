@@ -303,7 +303,8 @@ os.makedirs(VOCAB_DIR, exist_ok=True)
 os.makedirs(STAT_DIR, exist_ok=True)
 
 # ======================= OpenAI API Key =======================================
-load_dotenv(override=True)  # <--- FORCE Reload from file (ignores old memory)
+dotenv_path = os.path.join(APP_DIR, '.env')
+load_dotenv(dotenv_path=dotenv_path, override=True)  # <--- Erzwingt das Laden aus lokaler .env und ignoriert globale Keys
 
 # Client explizit initialisieren (verhindert Probleme mit alten global configs)
 api_key = os.getenv("OPENAI_API_KEY")
@@ -1651,8 +1652,7 @@ VERBINDLICHE REGELN (kein Interpretationsspielraum):
    - falsche Buchstaben
    - fehlende Leerzeichen
    - kaputte Sonderzeichen
-   Aber: **Nichts erfinden**, nur eindeutig rekonstruierbare Wörter.
-
+WICHTIG: keine Wörter ausgeben die es nicht gibt, oder die falsch geschrieben sind, immerkorrigieren und nur Korrekte Vokabelpaare ausgeben. Die OCR kann Fehler machen du MUSST sie korrigieren.
 7. Wenn ein Eintrag nicht eindeutig ein Vokabelpaar ist:
    → komplett ignorieren.
 
@@ -2320,10 +2320,11 @@ def rangliste_laden():
     # Eigene Daten immer einbeziehen (auch offline)
     if aktueller_nutzer:
         spieler.append({
-            'username': aktueller_nutzer,
-            'week_xp':  xp_woche,
-            'total_xp': xp_gesamt,
-            'is_self':  True,
+            'username':   aktueller_nutzer,
+            'week_xp':    xp_woche,
+            'total_xp':   xp_gesamt,
+            'last_reset': _xp_current_week(),  # immer aktuell (pruefe_weekly_reset lief bereits)
+            'is_self':    True,
         })
 
     if firebase_db:
@@ -2342,10 +2343,11 @@ def rangliste_laden():
                                 s['total_xp'] = max(s['total_xp'], d.get('total_xp', 0))
                     else:
                         remote.append({
-                            'username': name,
-                            'week_xp':  d.get('week_xp', 0),
-                            'total_xp': d.get('total_xp', 0),
-                            'is_self':  False,
+                            'username':   name,
+                            'week_xp':    d.get('week_xp', 0),
+                            'total_xp':   d.get('total_xp', 0),
+                            'last_reset': d.get('last_reset', ''),  # für Wochen-Filter
+                            'is_self':    False,
                         })
                 spieler.extend(remote)
             except Exception as e:
@@ -2380,8 +2382,13 @@ def _render_rangliste(spieler: list):
         except Exception:
             pass
 
-    # Nur Spieler mit Wöchentlichen XP > 0 anzeigen (verwaiste Accounts ausblenden)
-    spieler_aktiv = [s for s in spieler if s.get('week_xp', 0) > 0]
+    # Nur Spieler anzeigen, die sich diese Woche eingeloggt haben (last_reset == aktuelle Woche)
+    # → verhindert, dass nach dem Reset noch alte XP nicht-eingeloggter Nutzer erscheinen
+    current_week = _xp_current_week()
+    spieler_aktiv = [
+        s for s in spieler
+        if s.get('week_xp', 0) > 0 and s.get('last_reset', '') == current_week
+    ]
 
     # Sortieren nach week_xp (absteigende Reihenfolge), Gleichstand → gesamt-XP
     sorted_spieler = sorted(spieler_aktiv, key=lambda x: (x['week_xp'], x['total_xp']), reverse=True)
