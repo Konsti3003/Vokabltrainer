@@ -12,7 +12,7 @@ from flask import Flask, request, render_template_string
 from werkzeug.utils import secure_filename
 import qrcode
 import openai
-from openai import OpenAI  # <-- Import für den modernen Client
+from openai import OpenAI
 import pytesseract
 import customtkinter as ctk
 import tkinter as tk
@@ -21,13 +21,11 @@ from PIL import Image, ImageEnhance
 from datetime import date, datetime, timedelta
 import time
 import hashlib
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+import base64
+import requests
 
-# --- Vorab-Definitionen zur Vermeidung statischer NameError-Warnungen ---
 # Farben / Theme
 BTN_COLOR       = "#6366f1"  # Indigo
 BTN_HOVER_COLOR = "#4f46e5"  # Dunkleres Indigo
@@ -183,7 +181,6 @@ def get_keyboard_distance(char1, char2):
     # Deutsche QWERTZ-Tastatur-Layout
     keyboard_layout = [
         ['q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 'ü', '+'],
-        
         ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ö', 'ä', '#'],
         ['<', 'y', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-']
     ]
@@ -288,13 +285,19 @@ def is_typo(user_answer, correct_answer, threshold=None):
 
 # ======================= Ermittlung des App-Ordners ==========================
 if getattr(sys, "frozen", False):
-    APP_DIR = os.path.dirname(sys.argv[0])
+    # .exe-Modus: statische Daten im Bundle, veränderliche neben der .exe
+    BUNDLE_DIR = sys._MEIPASS
+    APP_DIR = os.path.dirname(sys.executable)
 else:
-    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    # Normaler .py-Modus: alles im selben Ordner
+    BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
+    APP_DIR = BUNDLE_DIR
 
-# ======================= Unterordner im APP_DIR ==============================
-ICON_DIR  = os.path.join(APP_DIR, 'icons')
-OCR_DIR   = os.path.join(APP_DIR, 'ocr')
+# ======================= Unterordner =========================================
+# Statische Ressourcen (im Bundle enthalten)
+ICON_DIR  = os.path.join(BUNDLE_DIR, 'icons')
+OCR_DIR   = os.path.join(BUNDLE_DIR, 'ocr')
+# Veränderliche Daten (neben der .exe bzw. neben der .py)
 VOCAB_DIR = os.path.join(APP_DIR, 'vocabularies')
 STAT_DIR  = os.path.join(APP_DIR, 'stats')
 
@@ -303,7 +306,7 @@ os.makedirs(VOCAB_DIR, exist_ok=True)
 os.makedirs(STAT_DIR, exist_ok=True)
 
 # ======================= OpenAI API Key =======================================
-dotenv_path = os.path.join(APP_DIR, '.env')
+dotenv_path = os.path.join(BUNDLE_DIR, '.env')
 load_dotenv(dotenv_path=dotenv_path, override=True)  # <--- Erzwingt das Laden aus lokaler .env und ignoriert globale Keys
 
 # Client wird lazily beim ersten Verwendung erstellt (verhindert Startprobleme)
@@ -518,26 +521,40 @@ def statistik_bereinigen():
 XP_DATEI   = os.path.join(STAT_DIR, 'xp.json')
 _xp_lock   = threading.RLock()
 USER_DATEI = os.path.join(STAT_DIR, 'user.json')
-CRED_DATEI = os.path.join(APP_DIR,  'firebase_credentials.json')
+CRED_DATEI = os.path.join(BUNDLE_DIR, 'firebase_credentials.json')
+_firebase_init_started = False
 
 
-def init_firebase():
-    """Initialisiert Firebase Admin SDK. Bei Fehler läuft die App im Offline-Modus weiter."""
+def _init_firebase_worker():
+    """Initialisiert Firebase im Hintergrund, damit der App-Start nicht blockiert."""
     global firebase_db
     try:
         import firebase_admin
         from firebase_admin import credentials, firestore
-        if not os.path.exists(CRED_DATEI):
-            print("[Firebase] Keine Credentials-Datei gefunden → Offline-Modus.")
-            return
         cred = credentials.Certificate(CRED_DATEI)
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred)
         firebase_db = firestore.client()
         print("[Firebase] Verbunden.")
-    except Exception as e:
+    except BaseException as e:
         print(f"[Firebase] Fehler: {e} → Offline-Modus.")
         firebase_db = None
+
+
+def init_firebase(background=True):
+    """Startet die Firebase-Initialisierung; optional im Hintergrund."""
+    global _firebase_init_started
+    if _firebase_init_started:
+        return
+    if not os.path.exists(CRED_DATEI):
+        print("[Firebase] Keine Credentials-Datei gefunden → Offline-Modus.")
+        return
+
+    _firebase_init_started = True
+    if background:
+        threading.Thread(target=_init_firebase_worker, daemon=True).start()
+    else:
+        _init_firebase_worker()
 
 
 def _lade_user_data() -> dict:
@@ -1718,8 +1735,6 @@ def extract_pairs_from_image(path: str) -> list[dict]:
     # Bild öffnen
     img_raw = Image.open(path)
     
-    # 0. EXIF-Daten (Rotation) anwenden und erzwingen als reines RGB
-    # Verhindert Format-Bugs (wie versteckte Alphakanäle in PNGs oder komische JPEGs vom Handy)
     try:
         from PIL import ImageOps
         img_raw = ImageOps.exif_transpose(img_raw)
@@ -1763,7 +1778,7 @@ def extract_pairs_from_image(path: str) -> list[dict]:
 
 # ====================== Handy-Upload via Flask (QR-Code) =====================
 qr_popup_window = None
-temp_upload_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_uploads")
+temp_upload_dir = os.path.join(APP_DIR, "temp_uploads")
 os.makedirs(temp_upload_dir, exist_ok=True)
 
 flask_app = Flask(__name__)
@@ -1932,6 +1947,71 @@ def show_qr_popup():
     lbl_url = ctk.CTkLabel(qr_popup_window, text=url, font=('Courier New', 12), text_color=SUCCESS_COLOR)
     lbl_url.pack(pady=(5,20))
 
+def encode_image(image_path: str) -> str:
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("utf-8")
+
+
+def _parse_pairs_response(content: str) -> list[dict]:
+    pairs = []
+    for line in (content or "").strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(';', 1)
+        if len(parts) != 2:
+            continue
+        deu, foreign = parts[0].strip(), parts[1].strip()
+        if deu and foreign:
+            pairs.append({"Deutsch": deu, "Englisch": foreign})
+    return pairs
+
+
+def extract_pairs_from_image_vision(image_path: str) -> list[dict]:
+    """Extrahiert Vokabelpaare direkt aus einem Foto per Vision API."""
+    client = get_openai_client()
+    if not client:
+        return []
+
+    base64_image = encode_image(image_path)
+    prompt = (
+        "Du bist ein Extraktionsmodul fuer einen schulischen Vokabeltrainer. "
+        "Gib ausschliesslich Zeilen im Format Deutsch;Fremdsprache aus, "
+        "eine Vokabel pro Zeile, ohne Ueberschriften oder Erklaerungen. "
+        "Wenn mehrere Uebersetzungen vorhanden sind, nimm die einfachste und haeufigste. "
+        "Entferne Klammern, Zusatzinfos, Wortarten und Kommentare. "
+        "Wenn etwas unklar ist, lasse es weg."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            temperature=0,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                }
+            ],
+            max_tokens=700,
+        )
+    except Exception as e:
+        print(f"[Vision] Fehler: {e}")
+        return []
+
+    content = response.choices[0].message.content or ""
+    return _parse_pairs_response(content)
+ 
+
 def process_mobile_upload(filepath):
     """ Wird vom Flask-Thread (via app.after) ausgelöst, wenn ein Bild da ist. """
     global qr_popup_window
@@ -1947,7 +2027,11 @@ def process_mobile_upload(filepath):
         app.update_idletasks()
 
         try:
-            neue = extract_pairs_from_image(filepath)
+            # Primary path: direkte Vision-Extraktion aus dem Handyfoto.
+            neue = extract_pairs_from_image_vision(filepath)
+            if not neue:
+                # Fallback: OCR + Textmodell, falls Vision nichts liefert.
+                neue = extract_pairs_from_image(filepath)
         except Exception as e:
             editor_feedback.configure(text=f"Fehler: {e}", text_color=ERROR_COLOR)
             return
